@@ -4,7 +4,7 @@ import '../models/template_model.dart';
 import '../models/page_style_model.dart';
 import '../models/text_box_model.dart';
 import '../models/sticker_model.dart';
-import 'draggable_text_box.dart';
+import 'bounded_writing_zone.dart';
 import 'draggable_sticker.dart';
 import 'paper_pattern_painter.dart';
 import 'natural_page_note_editor.dart';
@@ -17,10 +17,11 @@ class InteractiveTemplateSheet extends StatelessWidget {
   final String? selectedTextBoxId;
   final String? selectedStickerId;
   final Function(String id) onSelectTextBox;
-  final Function(String id, Offset newPos) onPositionChanged;
-  final Function(String id, double newW, double newH) onSizeChanged;
+  final Function(String id, Offset newPos)? onPositionChanged;
+  final Function(String id, double newW, double newH)? onSizeChanged;
   final Function(String id, String newText) onTextChanged;
-  final Function(String id) onDeleteTextBox;
+  final Function(String id)? onDeleteTextBox;
+  final Function(String currentId)? onAutoAdvance;
 
   final Function(String id) onSelectSticker;
   final Function(String id, Offset newPos) onStickerPositionChanged;
@@ -51,10 +52,11 @@ class InteractiveTemplateSheet extends StatelessWidget {
     required this.selectedTextBoxId,
     required this.selectedStickerId,
     required this.onSelectTextBox,
-    required this.onPositionChanged,
-    required this.onSizeChanged,
+    this.onPositionChanged,
+    this.onSizeChanged,
     required this.onTextChanged,
-    required this.onDeleteTextBox,
+    this.onDeleteTextBox,
+    this.onAutoAdvance,
     required this.onSelectSticker,
     required this.onStickerPositionChanged,
     required this.onStickerScaleChanged,
@@ -94,11 +96,11 @@ class InteractiveTemplateSheet extends StatelessWidget {
       );
     }
 
-    // Template Mode Image Rendering
+    // Template Mode Image Rendering - Use contain so no section is ever cropped
     if (template?.imageBytes != null && template!.imageBytes!.isNotEmpty) {
       return Image.memory(
         template!.imageBytes!,
-        fit: BoxFit.cover,
+        fit: BoxFit.contain,
         errorBuilder: (ctx, err, stack) => _buildFallbackSheet(),
       );
     }
@@ -110,14 +112,14 @@ class InteractiveTemplateSheet extends StatelessWidget {
         if (file.existsSync()) {
           return Image.file(
             file,
-            fit: BoxFit.cover,
+            fit: BoxFit.contain,
             errorBuilder: (ctx, err, stack) => _buildFallbackSheet(),
           );
         }
       }
       return Image.asset(
         path,
-        fit: BoxFit.cover,
+        fit: BoxFit.contain,
         errorBuilder: (ctx, err, stack) => _buildFallbackSheet(),
       );
     }
@@ -127,40 +129,41 @@ class InteractiveTemplateSheet extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final double aspectRatio = pageStyle != null
-        ? pageStyle!.effectiveAspectRatio
-        : 2 / 3;
+    // When a template is active, use its exact original aspect ratio!
+    final double aspectRatio = (template != null)
+        ? template!.aspectRatio
+        : (pageStyle != null ? pageStyle!.effectiveAspectRatio : (848 / 1264));
 
-    return Container(
-      width: double.infinity,
-      decoration: BoxDecoration(
-        color: pageStyle?.backgroundColor ?? Colors.white,
-        borderRadius: BorderRadius.circular(12),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.16),
-            blurRadius: 28,
-            offset: const Offset(0, 10),
-          ),
-        ],
-      ),
+    return Center(
       child: AspectRatio(
         aspectRatio: aspectRatio,
-        child: Stack(
-          clipBehavior: Clip.none,
-          fit: StackFit.expand,
-          children: [
-            // Background Layer: Natural Note Paper OR Image Template
-            ClipRRect(
-              borderRadius: BorderRadius.circular(12),
-              child: GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                onTapUp: (details) {
-                  onCanvasTap(details.localPosition);
-                },
-                child: _buildBackgroundContent(),
+        child: Container(
+          decoration: BoxDecoration(
+            color: template != null ? Colors.white : (pageStyle?.backgroundColor ?? Colors.white),
+            borderRadius: BorderRadius.circular(12),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.16),
+                blurRadius: 28,
+                offset: const Offset(0, 10),
               ),
-            ),
+            ],
+          ),
+          child: Stack(
+            clipBehavior: Clip.none,
+            fit: StackFit.expand,
+            children: [
+              // Background Layer: Natural Note Paper OR Image Template
+              ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTapUp: (details) {
+                    onCanvasTap(details.localPosition);
+                  },
+                  child: _buildBackgroundContent(),
+                ),
+              ),
 
             // Dynamic Stickers Layer
             ...stickers.map((stk) {
@@ -175,25 +178,28 @@ class InteractiveTemplateSheet extends StatelessWidget {
               );
             }),
 
-            // Floating Text Boxes Layer (Only for Templates / AI Vision, not in natural page style mode)
+            // Structured Bounded Writing Zones Layer (Seamless & subtle dashed blue border on focus)
             if (pageStyle == null)
               ...textBoxes.map((item) {
-                return DraggableTextBoxWidget(
+                return BoundedWritingZoneWidget(
                   key: ValueKey(item.id),
                   item: item,
                   isSelected: item.id == selectedTextBoxId,
                   onTap: () => onSelectTextBox(item.id),
-                  onPositionChanged: (newPos) => onPositionChanged(item.id, newPos),
-                  onSizeChanged: (newW, newH) => onSizeChanged(item.id, newW, newH),
                   onTextChanged: (newText) => onTextChanged(item.id, newText),
-                  onDelete: () => onDeleteTextBox(item.id),
+                  onAutoAdvance: () {
+                    if (onAutoAdvance != null) {
+                      onAutoAdvance!(item.id);
+                    }
+                  },
                 );
               }),
           ],
         ),
       ),
-    );
-  }
+    ),
+  );
+}
 
   Widget _buildFallbackSheet() {
     return Container(

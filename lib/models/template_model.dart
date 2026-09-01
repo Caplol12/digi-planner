@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 
@@ -34,6 +35,7 @@ class JournalTemplate {
   final Uint8List? imageBytes;
   final List<String> tags;
   final List<TemplateSection> sections;
+  final double aspectRatio;
   bool isFavorite;
 
   JournalTemplate({
@@ -49,8 +51,56 @@ class JournalTemplate {
     this.imageBytes,
     required this.tags,
     required this.sections,
+    this.aspectRatio = 848 / 1264,
     this.isFavorite = false,
   });
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'title': title,
+        'categoryId': categoryId,
+        'subtitle': subtitle,
+        'themeColor': themeColor.toARGB32(),
+        'cardBackground': cardBackground.toARGB32(),
+        'isPro': isPro,
+        'iconCodePoint': icon.codePoint,
+        'imageAsset': imageAsset,
+        'imageBytesBase64': imageBytes != null ? base64Encode(imageBytes!) : null,
+        'tags': tags,
+        'sections': sections.map((s) => s.toJson()).toList(),
+        'aspectRatio': aspectRatio,
+        'isFavorite': isFavorite,
+      };
+
+  factory JournalTemplate.fromJson(Map<String, dynamic> json) {
+    Uint8List? bytes;
+    if (json['imageBytesBase64'] != null && (json['imageBytesBase64'] as String).isNotEmpty) {
+      try {
+        bytes = base64Decode(json['imageBytesBase64'] as String);
+      } catch (_) {}
+    }
+
+    final sectionsList = (json['sections'] as List? ?? [])
+        .map((s) => TemplateSection.fromJson(s as Map<String, dynamic>))
+        .toList();
+
+    return JournalTemplate(
+      id: json['id'] as String? ?? 't_${DateTime.now().millisecondsSinceEpoch}',
+      title: json['title'] as String? ?? 'قالب جدید',
+      categoryId: json['categoryId'] as String? ?? 'daily',
+      subtitle: json['subtitle'] as String? ?? '',
+      themeColor: Color((json['themeColor'] as int?) ?? 0xFF5B7A9C),
+      cardBackground: Color((json['cardBackground'] as int?) ?? 0xFFF3F7FD),
+      isPro: json['isPro'] as bool? ?? false,
+      icon: IconData(json['iconCodePoint'] as int? ?? Icons.grid_view_rounded.codePoint, fontFamily: 'MaterialIcons'),
+      imageAsset: json['imageAsset'] as String?,
+      imageBytes: bytes,
+      tags: (json['tags'] as List? ?? []).map((e) => e.toString()).toList(),
+      sections: sectionsList,
+      aspectRatio: (json['aspectRatio'] as num?)?.toDouble() ?? 848 / 1264,
+      isFavorite: json['isFavorite'] as bool? ?? false,
+    );
+  }
 
   static List<JournalTemplate> sampleTemplates = [
     JournalTemplate(
@@ -138,6 +188,26 @@ class TemplateSection {
     required this.type,
     required this.items,
   });
+
+  Map<String, dynamic> toJson() => {
+        'title': title,
+        'type': type.name,
+        'items': items,
+      };
+
+  factory TemplateSection.fromJson(Map<String, dynamic> json) {
+    final typeStr = json['type'] as String? ?? 'text';
+    final type = SectionType.values.firstWhere(
+      (e) => e.name == typeStr,
+      orElse: () => SectionType.text,
+    );
+    return TemplateSection(
+      title: json['title'] as String? ?? '',
+      type: type,
+      items: (json['items'] as List? ?? []).map((e) => e.toString()).toList(),
+    );
+  }
 }
+
 
 

@@ -7,7 +7,6 @@ class EditorBottomToolbar extends StatelessWidget {
   final bool hasSelectedSticker;
   final VoidCallback onAddTextBox;
   final VoidCallback onAddSticker;
-  final VoidCallback? onAIChatEdit;
   final VoidCallback onDeselect;
   final VoidCallback onFontPicker;
   final VoidCallback onColorPicker;
@@ -23,7 +22,6 @@ class EditorBottomToolbar extends StatelessWidget {
     required this.hasSelectedSticker,
     required this.onAddTextBox,
     required this.onAddSticker,
-    this.onAIChatEdit,
     required this.onDeselect,
     required this.onFontPicker,
     required this.onColorPicker,
@@ -64,15 +62,6 @@ class EditorBottomToolbar extends StatelessWidget {
                   label: '+ باکس متن',
                   isPrimary: true,
                   onTap: onAddTextBox,
-                ),
-
-              // Template Mode: AI Assistant / Smart Box
-              if (!isPageStyleMode && onAIChatEdit != null)
-                _buildToolItem(
-                  icon: Icons.auto_awesome_rounded,
-                  label: 'دستیار AI',
-                  isActive: true,
-                  onTap: onAIChatEdit!,
                 ),
 
               // Font & Size

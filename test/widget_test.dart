@@ -5,6 +5,10 @@ import 'package:journal_app/screens/choose_page_style_screen.dart';
 import 'package:journal_app/screens/pro_template_builder_screen.dart';
 import 'package:journal_app/screens/journal_editor_screen.dart';
 import 'package:journal_app/models/page_style_model.dart';
+import 'package:journal_app/models/ai_layout_model.dart';
+import 'package:journal_app/models/text_box_model.dart';
+import 'package:journal_app/widgets/draggable_text_box.dart';
+import 'package:journal_app/widgets/bounded_writing_zone.dart';
 
 void main() {
   testWidgets('JournalApp loads main navigation and tabs', (WidgetTester tester) async {
@@ -16,8 +20,13 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.textContaining('ژورنال'), findsWidgets);
-    expect(find.textContaining('ساخت برگه'), findsWidgets);
     expect(find.textContaining('قالب‌ها'), findsWidgets);
+    expect(find.textContaining('ژورنال جدید'), findsWidgets);
+
+    // Open create modal and verify create page option is present
+    await tester.tap(find.text('ژورنال جدید'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('ساخت برگه با سبک دلخواه'), findsOneWidget);
   });
 
   testWidgets('ChoosePageStyleScreen renders style options and can trigger Begin New Planner', (WidgetTester tester) async {
@@ -41,7 +50,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    // Verify header and sections from screenshot
+    // Verify header and sections
     expect(find.text('انتخاب سبک برگه'), findsOneWidget);
     expect(find.text('اندازه و ابعاد برگه'), findsOneWidget);
     expect(find.text('چیدمان و جهت صفحه'), findsOneWidget);
@@ -97,18 +106,18 @@ void main() {
     await tester.pumpAndSettle();
 
     // Step 1: Verify Image Input Step
-    expect(find.textContaining('ورود تصویر برگه'), findsWidgets);
+    expect(find.textContaining('انتخاب تصویر برگه'), findsWidgets);
     expect(find.textContaining('مرحله اول: تصویر برگه را وارد کنید'), findsOneWidget);
-    expect(find.textContaining('آپلود یا انتخاب تصویر از دستگاه'), findsOneWidget);
+    expect(find.textContaining('انتخاب تصویر از حافظه دستگاه'), findsOneWidget);
 
-    final nextStepFinder = find.textContaining('مرحله بعد: اسکن و تعیین باکس‌های متن');
+    final nextStepFinder = find.textContaining('مرحله بعد: اسکن و ساخت باکس‌های متن با هوش مصنوعی');
     expect(nextStepFinder, findsOneWidget);
     await tester.ensureVisible(nextStepFinder);
     await tester.tap(nextStepFinder);
     await tester.pumpAndSettle();
 
     // Step 2: Verify AI Scanning and Boxes Placement
-    expect(find.textContaining('اسکن AI و تعیین باکس‌ها'), findsWidgets);
+    expect(find.textContaining('اسکن هوشمند و تعیین باکس‌ها'), findsWidgets);
     expect(find.textContaining('باکس متن را متناسب با خطوط تصویر قرار داد'), findsOneWidget);
 
     // Tap on suggestion chip
@@ -162,6 +171,149 @@ void main() {
     expect(find.text('تراز متن'), findsOneWidget);
     expect(find.text('بولد'), findsOneWidget);
     expect(find.text('هایلایتر'), findsOneWidget);
+  });
+
+  test('DetectedBox and TextBoxItem deserialization generates unique IDs', () {
+    final box1 = DetectedBox.fromJson({'label': 'Box 1'});
+    final box2 = DetectedBox.fromJson({'label': 'Box 2'});
+    expect(box1.id, isNotEmpty);
+    expect(box2.id, isNotEmpty);
+    expect(box1.id, isNot(equals(box2.id)));
+
+    final tb1 = TextBoxItem.fromJson({'text': 'Hello'});
+    final tb2 = TextBoxItem.fromJson({'text': 'World'});
+    expect(tb1.id, isNotEmpty);
+    expect(tb2.id, isNotEmpty);
+    expect(tb1.id, isNot(equals(tb2.id)));
+  });
+
+  test('DetectedBox toTextBoxItem produces empty text with hintText', () {
+    final detected = DetectedBox(
+      id: 'box_test_1',
+      label: 'یادداشت روزانه',
+      type: DetectedBoxType.ruledLines,
+      normalizedX: 0.1,
+      normalizedY: 0.2,
+      normalizedWidth: 0.8,
+      normalizedHeight: 0.3,
+      placeholderText: 'اینجا بنویسید...',
+    );
+
+    final tb = detected.toTextBoxItem(const Size(420, 630));
+    expect(tb.text, isEmpty); // Blank so user doesn't have to backspace placeholder text
+    expect(tb.hintText, 'اینجا بنویسید...');
+    expect(tb.position.dx, 42.0);
+    expect(tb.position.dy, 126.0);
+  });
+
+  testWidgets('DraggableTextBoxWidget maintains fixed layout position when selected', (WidgetTester tester) async {
+    final item = TextBoxItem(
+      id: 'test_box',
+      text: 'Test content',
+      hintText: 'Hint',
+      position: const Offset(50, 80),
+      width: 200,
+      height: 40,
+      isSelected: false,
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Stack(
+            children: [
+              DraggableTextBoxWidget(
+                item: item,
+                isSelected: false,
+                onPositionChanged: (_) {},
+                onSizeChanged: (_, __) {},
+                onTap: () {},
+                onDelete: () {},
+                onTextChanged: (_) {},
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final unselectedRect = tester.getRect(find.byType(TextField));
+
+    // Rebuild with isSelected = true
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Stack(
+            children: [
+              DraggableTextBoxWidget(
+                item: item,
+                isSelected: true,
+                onPositionChanged: (_) {},
+                onSizeChanged: (_, __) {},
+                onTap: () {},
+                onDelete: () {},
+                onTextChanged: (_) {},
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final selectedRect = tester.getRect(find.byType(TextField));
+
+    // The TextField position must remain identical (zero layout jump)
+    expect(selectedRect.left, equals(unselectedRect.left));
+    expect(selectedRect.top, equals(unselectedRect.top));
+    expect(selectedRect.width, equals(unselectedRect.width));
+  });
+
+  testWidgets('BoundedWritingZoneWidget renders dashed border when focused and triggers autoAdvance on submit', (WidgetTester tester) async {
+    bool autoAdvanced = false;
+
+    final item = TextBoxItem(
+      id: 'zone_1',
+      text: 'Schedule item',
+      hintText: '9 AM Meeting',
+      position: const Offset(40, 100),
+      width: 200,
+      height: 28,
+      isSelected: false,
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Stack(
+            children: [
+              BoundedWritingZoneWidget(
+                item: item,
+                isSelected: true,
+                onTap: () {},
+                onTextChanged: (_) {},
+                onAutoAdvance: () => autoAdvanced = true,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // Verify CustomPaint with DashedRectPainter is present
+    expect(find.byType(CustomPaint), findsWidgets);
+    expect(find.text('Schedule item'), findsOneWidget);
+
+    // Tap and submit TextField to test auto-advance
+    await tester.tap(find.byType(TextField));
+    await tester.pumpAndSettle();
+    await tester.showKeyboard(find.byType(TextField));
+    await tester.testTextInput.receiveAction(TextInputAction.next);
+    await tester.pumpAndSettle();
+
+    expect(autoAdvanced, isTrue);
   });
 }
 

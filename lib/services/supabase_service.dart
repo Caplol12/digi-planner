@@ -13,9 +13,9 @@ class AiConfig {
   });
 
   static const AiConfig defaults = AiConfig(
-    baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
-    apiKey: 'AQ.Ab8RN6LmIeeGMLmBusGOMOBYZpjfmGyq1zNGgW1ReaeKR99Iqg',
-    model: 'gemini-3.1-flash-lite-preview',
+    baseUrl: 'https://9router-production-94cd.up.railway.app/v1',
+    apiKey: 'sk-6e26defd4d317d82-gblxln-0646a8bb',
+    model: 'mimovision',
   );
 
   factory AiConfig.fromJson(Map<String, dynamic> json) {
@@ -84,18 +84,20 @@ class SupabaseService {
 }
 
 class AiConfigService {
-  static AiConfig _cachedConfig = AiConfig.defaults;
+  static AiConfig? _cachedConfig;
   static DateTime? _lastFetchTime;
 
-  static AiConfig get currentConfig => _cachedConfig;
+  static AiConfig get currentConfig => _cachedConfig ?? AiConfig.defaults;
 
   /// Get AI configuration (cached or fresh from Supabase)
   static Future<AiConfig> getConfig({bool forceRefresh = false}) async {
-    if (!forceRefresh && _lastFetchTime != null) {
-      final difference = DateTime.now().difference(_lastFetchTime!);
-      if (difference.inMinutes < 5) {
-        return _cachedConfig;
+    if (!forceRefresh && _cachedConfig != null && _lastFetchTime != null) {
+      final diff = DateTime.now().difference(_lastFetchTime!);
+      if (diff.inMinutes < 10) {
+        return _cachedConfig!;
       }
+    } else if (!forceRefresh && _cachedConfig != null) {
+      return _cachedConfig!;
     }
 
     final fresh = await fetchConfigFromSupabase();
@@ -106,7 +108,7 @@ class AiConfigService {
   static Future<AiConfig> fetchConfigFromSupabase() async {
     final client = SupabaseService.client;
     if (client == null) {
-      return _cachedConfig;
+      return _cachedConfig ?? AiConfig.defaults;
     }
 
     try {
@@ -120,8 +122,8 @@ class AiConfigService {
       if (response != null) {
         _cachedConfig = AiConfig.fromJson(response);
         _lastFetchTime = DateTime.now();
-        debugPrint('✅ Loaded AI config from Supabase: model=${_cachedConfig.model}, url=${_cachedConfig.baseUrl}');
-        return _cachedConfig;
+        debugPrint('✅ Loaded AI config from Supabase: model=${_cachedConfig!.model}, url=${_cachedConfig!.baseUrl}');
+        return _cachedConfig!;
       }
     } catch (e) {
       debugPrint('ℹ️ Supabase ai_configs check: $e (using defaults)');
@@ -139,12 +141,13 @@ class AiConfigService {
         final val = response['value'] as Map<String, dynamic>;
         _cachedConfig = AiConfig.fromJson(val);
         _lastFetchTime = DateTime.now();
-        return _cachedConfig;
+        return _cachedConfig!;
       }
     } catch (_) {}
 
+    _cachedConfig ??= AiConfig.defaults;
     _lastFetchTime = DateTime.now();
-    return _cachedConfig;
+    return _cachedConfig!;
   }
 
   /// Save or update AI config in Supabase
@@ -153,6 +156,7 @@ class AiConfigService {
     final client = SupabaseService.client;
     if (client == null) return false;
 
+    // First attempt with 'default' text ID
     try {
       await client.from('ai_configs').upsert({
         'id': 'default',
@@ -161,10 +165,25 @@ class AiConfigService {
         'model': config.model,
         'updated_at': DateTime.now().toIso8601String(),
       });
+      debugPrint('✅ Saved AI config to Supabase (text ID).');
       return true;
-    } catch (e) {
-      debugPrint('⚠️ Could not save config to Supabase: $e');
-      return false;
+    } catch (e1) {
+      debugPrint('ℹ️ Supabase upsert with text ID failed: $e1 - trying UUID fallback...');
+      // Fallback with static UUID in case column is type uuid
+      try {
+        await client.from('ai_configs').upsert({
+          'id': '00000000-0000-0000-0000-000000000001',
+          'base_url': config.baseUrl,
+          'api_key': config.apiKey,
+          'model': config.model,
+          'updated_at': DateTime.now().toIso8601String(),
+        });
+        debugPrint('✅ Saved AI config to Supabase (UUID).');
+        return true;
+      } catch (e2) {
+        debugPrint('❌ Save AI config to Supabase failed: $e2');
+        return false;
+      }
     }
   }
 }

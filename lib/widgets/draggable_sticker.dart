@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import '../models/sticker_model.dart';
 
@@ -21,8 +22,9 @@ class DraggableStickerWidget extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    const baseSize = 48.0;
+    const baseSize = 56.0;
     final currentSize = baseSize * item.scale;
+    final hasImage = item.imagePath != null && item.imagePath!.isNotEmpty;
 
     return Positioned(
       left: item.position.dx,
@@ -51,59 +53,72 @@ class DraggableStickerWidget extends StatelessWidget {
             child: Stack(
               clipBehavior: Clip.none,
               children: [
-                // Sticker Content (Emoji or Stamp)
+                // Sticker Content: Gallery Photo OR Emoji
                 Center(
-                  child: Text(
-                    item.content,
-                    style: TextStyle(
-                      fontSize: 32 * item.scale,
-                    ),
-                  ),
+                  child: hasImage
+                      ? ClipRRect(
+                          borderRadius: BorderRadius.circular(8),
+                          child: Image.file(
+                            File(item.imagePath!),
+                            width: currentSize,
+                            height: currentSize,
+                            fit: BoxFit.cover,
+                            errorBuilder: (ctx, err, stack) => const Icon(Icons.broken_image_rounded, color: Colors.grey),
+                          ),
+                        )
+                      : Text(
+                          item.content,
+                          style: TextStyle(
+                            fontSize: 32 * item.scale,
+                          ),
+                        ),
                 ),
 
-                // Delete Handle (Top Right)
-                if (isSelected)
+                // Selection Overlay Controls
+                if (isSelected) ...[
+                  // Delete Button (Top-Left)
                   Positioned(
-                    top: 0,
-                    right: 0,
+                    top: -6,
+                    left: -6,
                     child: GestureDetector(
-                      behavior: HitTestBehavior.opaque,
                       onTap: onDelete,
                       child: Container(
-                        width: 22,
-                        height: 22,
+                        padding: const EdgeInsets.all(4),
                         decoration: const BoxDecoration(
-                          color: Color(0xFFFF4D4F),
+                          color: Colors.redAccent,
                           shape: BoxShape.circle,
+                          boxShadow: [
+                            BoxShadow(color: Colors.black26, blurRadius: 4),
+                          ],
                         ),
-                        child: const Icon(Icons.close_rounded, size: 14, color: Colors.white),
+                        child: const Icon(Icons.close, size: 14, color: Colors.white),
                       ),
                     ),
                   ),
 
-                // Resize/Scale Handle (Bottom Right)
-                if (isSelected)
+                  // Scale Handle (Bottom-Right)
                   Positioned(
-                    bottom: 0,
-                    right: 0,
+                    bottom: -6,
+                    right: -6,
                     child: GestureDetector(
-                      behavior: HitTestBehavior.opaque,
                       onPanUpdate: (details) {
-                        final newScale = (item.scale + details.delta.dx * 0.02).clamp(0.6, 3.0);
+                        final newScale = (item.scale + details.delta.dx * 0.015).clamp(0.5, 3.5);
                         onScaleChanged(newScale);
                       },
                       child: Container(
-                        width: 22,
-                        height: 22,
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF007AFF),
+                        padding: const EdgeInsets.all(4),
+                        decoration: const BoxDecoration(
+                          color: Color(0xFF007AFF),
                           shape: BoxShape.circle,
-                          border: Border.all(color: Colors.white, width: 1.5),
+                          boxShadow: [
+                            BoxShadow(color: Colors.black26, blurRadius: 4),
+                          ],
                         ),
-                        child: const Icon(Icons.aspect_ratio_rounded, size: 12, color: Colors.white),
+                        child: const Icon(Icons.open_in_full, size: 14, color: Colors.white),
                       ),
                     ),
                   ),
+                ],
               ],
             ),
           ),

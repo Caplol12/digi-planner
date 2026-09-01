@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import '../theme/app_theme.dart';
-import 'pro_badge.dart';
 
 class CustomNavigationRailBar extends StatelessWidget {
   final int currentIndex;
@@ -52,8 +51,6 @@ class CustomNavigationRailBar extends StatelessWidget {
                     ),
                   ],
                 ),
-                const SizedBox(height: 12),
-                const ProBadge(),
               ],
             ),
           ),
@@ -81,10 +78,8 @@ class CustomNavigationRailBar extends StatelessWidget {
 
           // Navigation Links
           _buildRailItem(0, Icons.menu_book_outlined, Icons.menu_book_rounded, 'ژورنال‌های من'),
-          _buildRailItem(1, Icons.draw_outlined, Icons.draw_rounded, 'ساخت برگه'),
-          _buildRailItem(2, Icons.style_outlined, Icons.style_rounded, 'قالب‌ها'),
-          _buildRailItem(3, Icons.search_rounded, Icons.saved_search_rounded, 'جستجو و تگ‌ها'),
-          _buildRailItem(4, Icons.favorite_border_rounded, Icons.favorite_rounded, 'علاقه‌مندی‌ها'),
+          _buildRailItem(1, Icons.style_outlined, Icons.style_rounded, 'قالب‌ها'),
+          _buildRailItem(2, Icons.favorite_border_rounded, Icons.favorite_rounded, 'علاقه‌مندی‌ها'),
 
           const Spacer(),
 

@@ -1,8 +1,11 @@
 import 'package:flutter/material.dart';
 
 class TextBoxItem {
+  static int _counter = 0;
+
   final String id;
   String text;
+  String hintText;
   Offset position;
   double width;
   double height;
@@ -18,6 +21,7 @@ class TextBoxItem {
   TextBoxItem({
     required this.id,
     this.text = '',
+    this.hintText = '',
     required this.position,
     this.width = 180,
     this.height = 44,
@@ -34,6 +38,7 @@ class TextBoxItem {
   Map<String, dynamic> toJson() => {
         'id': id,
         'text': text,
+        'hintText': hintText,
         'dx': position.dx,
         'dy': position.dy,
         'width': width,
@@ -48,8 +53,11 @@ class TextBoxItem {
       };
 
   factory TextBoxItem.fromJson(Map<String, dynamic> json) => TextBoxItem(
-        id: json['id'] ?? DateTime.now().millisecondsSinceEpoch.toString(),
+        id: (json['id']?.toString().isNotEmpty == true)
+            ? json['id'].toString()
+            : 'tb_${DateTime.now().millisecondsSinceEpoch}_${++_counter}',
         text: json['text'] ?? '',
+        hintText: json['hintText'] ?? '',
         position: Offset(json['dx']?.toDouble() ?? 50.0, json['dy']?.toDouble() ?? 50.0),
         width: json['width']?.toDouble() ?? 180.0,
         height: json['height']?.toDouble() ?? 44.0,
@@ -65,6 +73,7 @@ class TextBoxItem {
   TextBoxItem copyWith({
     String? id,
     String? text,
+    String? hintText,
     Offset? position,
     double? width,
     double? height,
@@ -80,6 +89,7 @@ class TextBoxItem {
     return TextBoxItem(
       id: id ?? this.id,
       text: text ?? this.text,
+      hintText: hintText ?? this.hintText,
       position: position ?? this.position,
       width: width ?? this.width,
       height: height ?? this.height,

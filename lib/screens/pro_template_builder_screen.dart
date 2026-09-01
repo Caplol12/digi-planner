@@ -1,12 +1,13 @@
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
 import '../models/ai_layout_model.dart';
 import '../models/template_model.dart';
 import '../models/journal_model.dart';
 import '../services/ai_vision_layout_service.dart';
+import '../services/notebook_export_service.dart';
 import '../services/supabase_service.dart';
 import '../widgets/pro_badge.dart';
 import '../theme/app_theme.dart';
@@ -53,7 +54,7 @@ class _ProTemplateBuilderScreenState extends State<ProTemplateBuilderScreen> {
   }
 
   Future<void> _refreshAiConfig() async {
-    await AiConfigService.getConfig(forceRefresh: true);
+    await AiConfigService.getConfig(forceRefresh: false);
     if (mounted) {
       setState(() {});
     }
@@ -70,6 +71,7 @@ class _ProTemplateBuilderScreenState extends State<ProTemplateBuilderScreen> {
       final result = await FilePicker.pickFiles(
         type: FileType.image,
         withData: true, // Reads bytes for Cross-platform (Desktop, Web, Mobile)
+        allowMultiple: false,
       );
 
       if (result != null && result.files.isNotEmpty) {
@@ -221,13 +223,83 @@ class _ProTemplateBuilderScreenState extends State<ProTemplateBuilderScreen> {
         builder: (context) => JournalEditorScreen(
           template: customTemplate,
           existingJournal: initialJournal,
-          onSave: (newJournal) {
-            widget.onJournalCreated(newJournal);
+          onSave: (j) {
+            widget.onJournalCreated(j);
             Navigator.pop(context); // Close builder screen
           },
         ),
       ),
     );
+  }
+
+  Future<void> _exportAiLayoutToJson() async {
+    if (_analysisResult == null) return;
+    try {
+      final file = await NotebookExportService.instance.exportAiLayoutToJson(_analysisResult!);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('✨ فایل JSON چیدمان لایه‌باز ذخیره شد:\n${file.path}'),
+            backgroundColor: const Color(0xFF2E7D32),
+            behavior: SnackBarBehavior.floating,
+            duration: const Duration(seconds: 4),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('خطا در خروجی چیدمان: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
+
+  Future<void> _importAiLayoutFromJson() async {
+    try {
+      final result = await FilePicker.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['json'],
+        withData: true,
+      );
+
+      if (result != null && result.files.isNotEmpty) {
+        final bytes = result.files.first.bytes;
+        final fileStr = bytes != null ? utf8.decode(bytes) : await File(result.files.first.path!).readAsString();
+        final importRes = NotebookExportService.instance.importPackageFromJson(fileStr);
+
+        if (importRes.isSuccess && (importRes.aiLayout != null || importRes.template != null)) {
+          setState(() {
+            _currentStep = 1;
+            if (importRes.aiLayout != null) {
+              _analysisResult = importRes.aiLayout;
+            } else if (importRes.template != null) {
+              final tmpl = importRes.template!;
+              _selectedImageBytes = tmpl.imageBytes;
+              _selectedImagePath = tmpl.imageAsset ?? '';
+              _selectedFileName = tmpl.title;
+            }
+          });
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text(importRes.message), backgroundColor: const Color(0xFF2E7D32)),
+            );
+          }
+        } else {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text(importRes.message), backgroundColor: Colors.red),
+            );
+          }
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('خطا در بارگذاری فایل JSON: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
   }
 
   Widget _buildRenderedImageWidget({required BoxFit fit}) {
@@ -285,6 +357,19 @@ class _ProTemplateBuilderScreenState extends State<ProTemplateBuilderScreen> {
             const SizedBox(width: 8),
             const ProBadge(),
             const Spacer(),
+            // Import JSON Button
+            IconButton(
+              tooltip: 'ورود فایل لایه‌باز JSON چیدمان',
+              icon: const Icon(Icons.file_download_outlined, color: Color(0xFF1565C0), size: 20),
+              onPressed: _importAiLayoutFromJson,
+            ),
+            // Export JSON Button
+            if (_analysisResult != null)
+              IconButton(
+                tooltip: 'خروجی لایه‌باز JSON چیدمان',
+                icon: const Icon(Icons.file_upload_outlined, color: Color(0xFF2E7D32), size: 20),
+                onPressed: _exportAiLayoutToJson,
+              ),
             // AI Model Pill
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
@@ -761,38 +846,112 @@ class _ProTemplateBuilderScreenState extends State<ProTemplateBuilderScreen> {
                                             ),
                                         ],
                                       ),
-                                      padding: const EdgeInsets.all(6),
-                                      child: Column(
-                                        crossAxisAlignment: CrossAxisAlignment.start,
-                                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                        children: [
-                                          // Badge Tag
-                                          Container(
-                                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                            decoration: BoxDecoration(
-                                              color: box.badgeColor,
-                                              borderRadius: BorderRadius.circular(4),
-                                            ),
-                                            child: Text(
-                                              box.typeTitlePersian,
-                                              style: const TextStyle(
-                                                color: Colors.white,
-                                                fontSize: 9,
-                                                fontWeight: FontWeight.bold,
+                                      padding: EdgeInsets.symmetric(
+                                        horizontal: width < 50 ? 2 : 4,
+                                        vertical: height < 30 ? 1 : 4,
+                                      ),
+                                      child: ClipRect(
+                                        child: LayoutBuilder(
+                                          builder: (context, boxConstraints) {
+                                            // 1. Tiny box: height < 28 or width < 45
+                                            if (boxConstraints.maxHeight < 28 || boxConstraints.maxWidth < 45) {
+                                              return Center(
+                                                child: FittedBox(
+                                                  fit: BoxFit.scaleDown,
+                                                  alignment: AlignmentDirectional.centerStart,
+                                                  child: Text(
+                                                    box.label.isNotEmpty ? box.label : box.typeTitlePersian,
+                                                    maxLines: 1,
+                                                    overflow: TextOverflow.ellipsis,
+                                                    style: TextStyle(
+                                                      fontSize: 8.5,
+                                                      fontWeight: FontWeight.bold,
+                                                      color: Colors.black.withValues(alpha: 0.85),
+                                                    ),
+                                                  ),
+                                                ),
+                                              );
+                                            }
+
+                                            // 2. Compact box: 28 <= height < 46
+                                            if (boxConstraints.maxHeight < 46) {
+                                              return FittedBox(
+                                                fit: BoxFit.scaleDown,
+                                                alignment: AlignmentDirectional.topStart,
+                                                child: Row(
+                                                  mainAxisSize: MainAxisSize.min,
+                                                  children: [
+                                                    Container(
+                                                      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                                                      decoration: BoxDecoration(
+                                                        color: box.badgeColor,
+                                                        borderRadius: BorderRadius.circular(3),
+                                                      ),
+                                                      child: Text(
+                                                        box.typeTitlePersian,
+                                                        style: const TextStyle(
+                                                          color: Colors.white,
+                                                          fontSize: 8,
+                                                          fontWeight: FontWeight.bold,
+                                                        ),
+                                                      ),
+                                                    ),
+                                                    const SizedBox(width: 4),
+                                                    Text(
+                                                      box.label,
+                                                      style: TextStyle(
+                                                        fontSize: 9,
+                                                        fontWeight: FontWeight.bold,
+                                                        color: Colors.black.withValues(alpha: 0.8),
+                                                      ),
+                                                      maxLines: 1,
+                                                      overflow: TextOverflow.ellipsis,
+                                                    ),
+                                                  ],
+                                                ),
+                                              );
+                                            }
+
+                                            // 3. Regular / Large box: height >= 46
+                                            return FittedBox(
+                                              fit: BoxFit.scaleDown,
+                                              alignment: AlignmentDirectional.topStart,
+                                              child: Column(
+                                                crossAxisAlignment: CrossAxisAlignment.start,
+                                                mainAxisSize: MainAxisSize.min,
+                                                children: [
+                                                  // Badge Tag
+                                                  Container(
+                                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                                    decoration: BoxDecoration(
+                                                      color: box.badgeColor,
+                                                      borderRadius: BorderRadius.circular(4),
+                                                    ),
+                                                    child: Text(
+                                                      box.typeTitlePersian,
+                                                      style: const TextStyle(
+                                                        color: Colors.white,
+                                                        fontSize: 9,
+                                                        fontWeight: FontWeight.bold,
+                                                      ),
+                                                    ),
+                                                  ),
+                                                  const SizedBox(height: 2),
+                                                  Text(
+                                                    box.label,
+                                                    style: TextStyle(
+                                                      fontSize: 10,
+                                                      fontWeight: FontWeight.bold,
+                                                      color: Colors.black.withValues(alpha: 0.8),
+                                                    ),
+                                                    maxLines: 1,
+                                                    overflow: TextOverflow.ellipsis,
+                                                  ),
+                                                ],
                                               ),
-                                            ),
-                                          ),
-                                          Text(
-                                            box.label,
-                                            style: TextStyle(
-                                              fontSize: 10,
-                                              fontWeight: FontWeight.bold,
-                                              color: Colors.black.withValues(alpha: 0.8),
-                                            ),
-                                            maxLines: 1,
-                                            overflow: TextOverflow.ellipsis,
-                                          ),
-                                        ],
+                                            );
+                                          },
+                                        ),
                                       ),
                                     ),
                                   ),

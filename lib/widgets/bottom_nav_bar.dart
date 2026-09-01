@@ -32,7 +32,7 @@ class CustomBottomNavBar extends StatelessWidget {
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
           child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceAround,
+            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
             children: [
               // 1. My Planners / Journals
               _buildNavItem(
@@ -42,23 +42,15 @@ class CustomBottomNavBar extends StatelessWidget {
                 label: 'ژورنال‌ها',
               ),
 
-              // 2. Choose Page Style / Build Page
-              _buildNavItem(
-                index: 1,
-                icon: Icons.draw_outlined,
-                activeIcon: Icons.draw_rounded,
-                label: 'ساخت برگه',
-              ),
-
-              // 3. Central Prominent Create Button
+              // 2. Central Prominent Create Button
               GestureDetector(
                 onTap: onCreatePressed,
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     Container(
-                      width: 44,
-                      height: 44,
+                      width: 48,
+                      height: 48,
                       decoration: BoxDecoration(
                         gradient: const LinearGradient(
                           colors: [Color(0xFFFF8A65), AppTheme.primaryColor],
@@ -77,7 +69,7 @@ class CustomBottomNavBar extends StatelessWidget {
                       child: const Icon(
                         Icons.add_rounded,
                         color: Colors.white,
-                        size: 26,
+                        size: 28,
                       ),
                     ),
                     const SizedBox(height: 4),
@@ -93,20 +85,12 @@ class CustomBottomNavBar extends StatelessWidget {
                 ),
               ),
 
-              // 4. Templates
+              // 3. Templates
               _buildNavItem(
-                index: 2,
+                index: 1,
                 icon: Icons.style_outlined,
                 activeIcon: Icons.style_rounded,
                 label: 'قالب‌ها',
-              ),
-
-              // 5. Search & Tags
-              _buildNavItem(
-                index: 3,
-                icon: Icons.search_rounded,
-                activeIcon: Icons.saved_search_rounded,
-                label: 'جستجو',
               ),
             ],
           ),

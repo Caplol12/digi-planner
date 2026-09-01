@@ -1,12 +1,14 @@
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:file_picker/file_picker.dart';
 import '../models/template_model.dart';
 import '../models/page_style_model.dart';
 import '../models/journal_model.dart';
+import '../models/notebook_model.dart';
 import '../models/text_box_model.dart';
 import '../models/sticker_model.dart';
-import '../models/ai_layout_model.dart';
-import '../services/ai_vision_layout_service.dart';
+import '../services/notebook_export_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/interactive_template_sheet.dart';
 import '../widgets/editor_bottom_toolbar.dart';
@@ -103,8 +105,9 @@ class _JournalEditorScreenState extends State<JournalEditorScreen> {
     if (_currentPageStyle == null) {
       if (_textBoxes.isEmpty) {
         final initialBox = TextBoxItem(
-          id: DateTime.now().millisecondsSinceEpoch.toString(),
-          text: 'برای شروع نوشتن اینجا کلیک کنید...',
+          id: 'tb_${DateTime.now().millisecondsSinceEpoch}',
+          text: '',
+          hintText: 'برای شروع نوشتن اینجا کلیک کنید...',
           position: const Offset(40, 90),
           width: 220,
           height: 38,
@@ -149,8 +152,9 @@ class _JournalEditorScreenState extends State<JournalEditorScreen> {
       }
 
       final newBox = TextBoxItem(
-        id: DateTime.now().millisecondsSinceEpoch.toString(),
+        id: 'tb_${DateTime.now().millisecondsSinceEpoch}_${_textBoxes.length}',
         text: '',
+        hintText: 'متن خود را بنویسید...',
         position: position ?? Offset(60, 100 + (_textBoxes.length * 35.0) % 300),
         width: 180,
         height: 36,
@@ -176,7 +180,7 @@ class _JournalEditorScreenState extends State<JournalEditorScreen> {
       }
 
       final newSticker = StickerItem(
-        id: DateTime.now().millisecondsSinceEpoch.toString(),
+        id: 'stk_${DateTime.now().millisecondsSinceEpoch}_${_stickers.length}',
         content: emoji,
         position: Offset(100 + (_stickers.length * 20.0) % 200, 120 + (_stickers.length * 20.0) % 200),
         isSelected: true,
@@ -408,214 +412,6 @@ class _JournalEditorScreenState extends State<JournalEditorScreen> {
     );
   }
 
-  void _showAIChatAssistant() {
-    final chatInputCtrl = TextEditingController();
-    List<String> chips = [
-      'یک چک‌لیست اولویت‌ها اضافه کن',
-      'باکس یادداشت رو ۳ خط بلندتر کن',
-      'باکس‌ها رو متقارن و تراز کن',
-      'یک کادر تاریخ در بالا اضافه کن',
-    ];
-    String? lastAiMessage;
-    bool isLoading = false;
-
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.white,
-      isScrollControlled: true,
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
-      builder: (context) => StatefulBuilder(
-        builder: (context, setModalState) => SafeArea(
-          child: Padding(
-            padding: EdgeInsets.only(
-              left: 20,
-              right: 20,
-              top: 16,
-              bottom: MediaQuery.of(context).viewInsets.bottom + 16,
-            ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Center(
-                  child: Container(
-                    width: 40,
-                    height: 4,
-                    decoration: BoxDecoration(color: Colors.grey.shade300, borderRadius: BorderRadius.circular(2)),
-                  ),
-                ),
-                const SizedBox(height: 14),
-                const Row(
-                  children: [
-                    Icon(Icons.auto_awesome_rounded, color: Color(0xFFFF7043), size: 22),
-                    SizedBox(width: 8),
-                    Text(
-                      'دستیار هوش مصنوعی ویرایشگر (AI Layout Chat)',
-                      style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  'با دستور متنی می‌توانید ساختار باکس‌ها را تغییر دهید یا کادرهای جدید اضافه کنید.',
-                  style: TextStyle(fontSize: 11.5, color: Colors.grey.shade600),
-                ),
-                const SizedBox(height: 14),
-                if (lastAiMessage != null)
-                  Container(
-                    padding: const EdgeInsets.all(12),
-                    margin: const EdgeInsets.only(bottom: 12),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFF1F5F9),
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: const Color(0xFFE2E8F0)),
-                    ),
-                    child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Icon(Icons.smart_toy_rounded, size: 18, color: AppTheme.primaryColor),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            lastAiMessage!,
-                            style: const TextStyle(fontSize: 12, color: Color(0xFF334155), height: 1.35),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                if (isLoading)
-                  const Padding(
-                    padding: EdgeInsets.symmetric(vertical: 8),
-                    child: Row(
-                      children: [
-                        SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2)),
-                        SizedBox(width: 8),
-                        Text('هوش مصنوعی در حال اعمال تغییرات...', style: TextStyle(fontSize: 11, color: Colors.grey)),
-                      ],
-                    ),
-                  ),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 6,
-                  children: chips.map((chip) {
-                    return ActionChip(
-                      label: Text(chip, style: const TextStyle(fontSize: 11)),
-                      backgroundColor: const Color(0xFFF8FAFC),
-                      side: const BorderSide(color: Color(0xFFCBD5E1)),
-                      onPressed: () async {
-                        setModalState(() => isLoading = true);
-                        final detectedList = _textBoxes.map((b) => DetectedBox(
-                          id: b.id,
-                          label: b.text,
-                          type: DetectedBoxType.freeText,
-                          normalizedX: (b.position.dx / 400).clamp(0.0, 1.0),
-                          normalizedY: (b.position.dy / 600).clamp(0.0, 1.0),
-                          normalizedWidth: (b.width / 400).clamp(0.0, 1.0),
-                          normalizedHeight: (b.height / 600).clamp(0.0, 1.0),
-                        )).toList();
-
-                        final res = await AiVisionLayoutService.processChatEditCommand(
-                          userCommand: chip,
-                          currentBoxes: detectedList,
-                        );
-
-                        setState(() {
-                          _textBoxes.clear();
-                          const canvasSize = Size(400, 600);
-                          for (final box in res.updatedBoxes) {
-                            _textBoxes.add(box.toTextBoxItem(canvasSize));
-                          }
-                          if (_textBoxes.isNotEmpty) {
-                            _selectedTextBoxId = _textBoxes.last.id;
-                          }
-                        });
-
-                        setModalState(() {
-                          isLoading = false;
-                          lastAiMessage = res.assistantMessage;
-                          chips = res.suggestionChips;
-                        });
-                      },
-                    );
-                  }).toList(),
-                ),
-                const SizedBox(height: 12),
-                Row(
-                  children: [
-                    Expanded(
-                      child: TextField(
-                        controller: chatInputCtrl,
-                        style: const TextStyle(fontSize: 13),
-                        decoration: InputDecoration(
-                          hintText: 'دستور متنی (مثلاً: یک کادر تاریخ در بالا اضافه کن)...',
-                          hintStyle: TextStyle(fontSize: 11.5, color: Colors.grey.shade400),
-                          contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                          filled: true,
-                          fillColor: const Color(0xFFF8FAFC),
-                          border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(10),
-                            borderSide: const BorderSide(color: Color(0xFFCBD5E1)),
-                          ),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    IconButton(
-                      onPressed: () async {
-                        final text = chatInputCtrl.text.trim();
-                        if (text.isEmpty) return;
-                        chatInputCtrl.clear();
-                        setModalState(() => isLoading = true);
-
-                        final detectedList = _textBoxes.map((b) => DetectedBox(
-                          id: b.id,
-                          label: b.text,
-                          type: DetectedBoxType.freeText,
-                          normalizedX: (b.position.dx / 400).clamp(0.0, 1.0),
-                          normalizedY: (b.position.dy / 600).clamp(0.0, 1.0),
-                          normalizedWidth: (b.width / 400).clamp(0.0, 1.0),
-                          normalizedHeight: (b.height / 600).clamp(0.0, 1.0),
-                        )).toList();
-
-                        final res = await AiVisionLayoutService.processChatEditCommand(
-                          userCommand: text,
-                          currentBoxes: detectedList,
-                        );
-
-                        setState(() {
-                          _textBoxes.clear();
-                          const canvasSize = Size(400, 600);
-                          for (final box in res.updatedBoxes) {
-                            _textBoxes.add(box.toTextBoxItem(canvasSize));
-                          }
-                          if (_textBoxes.isNotEmpty) {
-                            _selectedTextBoxId = _textBoxes.last.id;
-                          }
-                        });
-
-                        setModalState(() {
-                          isLoading = false;
-                          lastAiMessage = res.assistantMessage;
-                          chips = res.suggestionChips;
-                        });
-                      },
-                      style: IconButton.styleFrom(
-                        backgroundColor: const Color(0xFFFF7043),
-                        foregroundColor: Colors.white,
-                      ),
-                      icon: const Icon(Icons.send_rounded, size: 18),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
   void _saveJournal() {
     final serializedData = jsonEncode({
       if (_currentPageStyle != null) ...{
@@ -689,6 +485,93 @@ class _JournalEditorScreenState extends State<JournalEditorScreen> {
     Navigator.pop(context);
   }
 
+  Future<void> _exportPageToJson() async {
+    try {
+      final page = NotebookPageModel(
+        id: widget.existingJournal?.id ?? DateTime.now().millisecondsSinceEpoch.toString(),
+        title: widget.existingJournal?.title ?? (_currentTemplate?.title ?? 'برگه یادداشت'),
+        pageStyle: _currentPageStyle,
+        templateId: _currentTemplate?.id,
+        noteTitle: _noteTitleController.text,
+        noteBody: _noteBodyController.text,
+        cueText: _cueController.text,
+        summaryText: _summaryController.text,
+        textBoxes: _textBoxes,
+        stickers: _stickers,
+      );
+
+      final file = await NotebookExportService.instance.exportPageToJson(page, associatedTemplate: _currentTemplate);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('✨ خروجی لایه‌باز JSON برگه در مسیر زیر ذخیره شد:\n${file.path}'),
+            backgroundColor: const Color(0xFF2E7D32),
+            behavior: SnackBarBehavior.floating,
+            duration: const Duration(seconds: 4),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('خطا در خروجی گرفتن: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
+
+  Future<void> _importPageFromJson() async {
+    try {
+      final result = await FilePicker.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['json'],
+        withData: true,
+      );
+
+      if (result != null && result.files.isNotEmpty) {
+        final bytes = result.files.first.bytes;
+        final fileStr = bytes != null ? utf8.decode(bytes) : await File(result.files.first.path!).readAsString();
+        final importRes = NotebookExportService.instance.importPackageFromJson(fileStr);
+
+        if (importRes.isSuccess && (importRes.page != null || importRes.template != null)) {
+          setState(() {
+            if (importRes.page != null) {
+              final p = importRes.page!;
+              _noteTitleController.text = p.noteTitle;
+              _noteBodyController.text = p.noteBody;
+              _cueController.text = p.cueText;
+              _summaryController.text = p.summaryText;
+              _textBoxes.clear();
+              _textBoxes.addAll(p.textBoxes);
+              _stickers.clear();
+              _stickers.addAll(p.stickers);
+            }
+            if (importRes.template != null) {
+              _currentTemplate = importRes.template;
+            }
+          });
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text(importRes.message), backgroundColor: const Color(0xFF2E7D32)),
+            );
+          }
+        } else {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text(importRes.message), backgroundColor: Colors.red),
+            );
+          }
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('خطا در خواندن فایل JSON: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final isPageStyleMode = _currentPageStyle != null;
@@ -720,6 +603,20 @@ class _JournalEditorScreenState extends State<JournalEditorScreen> {
                 const ProBadge(),
 
                 const Spacer(),
+
+                // Import JSON Action
+                IconButton(
+                  tooltip: 'ورود برگه از فایل JSON',
+                  icon: const Icon(Icons.file_download_outlined, color: Color(0xFF1565C0), size: 22),
+                  onPressed: _importPageFromJson,
+                ),
+
+                // Export JSON Action
+                IconButton(
+                  tooltip: 'خروجی لایه‌باز JSON برگه',
+                  icon: const Icon(Icons.file_upload_outlined, color: Color(0xFF2E7D32), size: 22),
+                  onPressed: _exportPageToJson,
+                ),
 
                 // Add Sticker Action
                 IconButton(
@@ -770,7 +667,7 @@ class _JournalEditorScreenState extends State<JournalEditorScreen> {
                 padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
                 child: Center(
                   child: ConstrainedBox(
-                    constraints: const BoxConstraints(maxWidth: 580),
+                    constraints: BoxConstraints(maxWidth: isPageStyleMode ? 580 : 420),
                     child: InteractiveTemplateSheet(
                       template: _currentTemplate,
                       pageStyle: _currentPageStyle,
@@ -825,6 +722,19 @@ class _JournalEditorScreenState extends State<JournalEditorScreen> {
                             _selectedTextBoxId = _textBoxes.isNotEmpty ? _textBoxes.last.id : null;
                           }
                         });
+                      },
+                      onAutoAdvance: (currentId) {
+                        final currentIndex = _textBoxes.indexWhere((b) => b.id == currentId);
+                        if (currentIndex != -1 && currentIndex + 1 < _textBoxes.length) {
+                          final nextBox = _textBoxes[currentIndex + 1];
+                          setState(() {
+                            _selectedTextBoxId = nextBox.id;
+                            _selectedStickerId = null;
+                            for (final b in _textBoxes) {
+                              b.isSelected = b.id == nextBox.id;
+                            }
+                          });
+                        }
                       },
                       onSelectSticker: (id) {
                         setState(() {
@@ -890,7 +800,6 @@ class _JournalEditorScreenState extends State<JournalEditorScreen> {
             hasSelectedBox: _selectedTextBoxId != null,
             hasSelectedSticker: _selectedStickerId != null,
             onAddTextBox: () => _addNewTextBox(),
-            onAIChatEdit: _showAIChatAssistant,
             onAddSticker: () => StickersSheet.show(context, onStickerSelected: _addNewSticker),
             onDeselect: () {
               setState(() {

@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 class StickerItem {
   final String id;
   final String content; // Emoji, icon character or label
+  final String? imagePath; // Optional path for gallery photos
   final bool isEmoji;
   Offset position;
   double scale;
@@ -11,7 +12,8 @@ class StickerItem {
 
   StickerItem({
     required this.id,
-    required this.content,
+    this.content = '⭐',
+    this.imagePath,
     this.isEmoji = true,
     required this.position,
     this.scale = 1.0,
@@ -22,6 +24,7 @@ class StickerItem {
   Map<String, dynamic> toJson() => {
         'id': id,
         'content': content,
+        'imagePath': imagePath,
         'isEmoji': isEmoji,
         'dx': position.dx,
         'dy': position.dy,
@@ -32,7 +35,8 @@ class StickerItem {
   factory StickerItem.fromJson(Map<String, dynamic> json) => StickerItem(
         id: json['id'] ?? DateTime.now().millisecondsSinceEpoch.toString(),
         content: json['content'] ?? '⭐',
-        isEmoji: json['isEmoji'] ?? true,
+        imagePath: json['imagePath'] as String?,
+        isEmoji: json['isEmoji'] ?? (json['imagePath'] == null),
         position: Offset(json['dx']?.toDouble() ?? 100.0, json['dy']?.toDouble() ?? 100.0),
         scale: json['scale']?.toDouble() ?? 1.0,
         rotation: json['rotation']?.toDouble() ?? 0.0,
@@ -57,10 +61,6 @@ class StickerCategory {
     StickerCategory(
       title: 'مطالعه و کار',
       stickers: ['📚', '💻', '📝', '📅', '💼', '📎', '✏️', '📖', '🗂️', '📊', '🔍', '📮'],
-    ),
-    StickerCategory(
-      title: 'نشانه‌ها و آب‌وهوا',
-      stickers: ['⛅', '🌧️', '⚡', '🌈', '🐾', '❤️', '🎈', '🌻', '🧁', '🍎', '💤', '🎉'],
     ),
   ];
 }

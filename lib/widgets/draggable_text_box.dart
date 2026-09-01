@@ -100,16 +100,19 @@ class _DraggableTextBoxWidgetState extends State<DraggableTextBoxWidget> {
   Widget build(BuildContext context) {
     final isSel = widget.isSelected;
     final highlight = widget.item.highlightColor;
+    final effectiveHint = widget.item.hintText.isNotEmpty
+        ? widget.item.hintText
+        : (isSel ? 'متن خود را بنویسید...' : '');
 
     return Positioned(
       left: widget.item.position.dx,
       top: widget.item.position.dy,
       child: SizedBox(
-        width: widget.item.width + (isSel ? handleSize : 0),
+        width: widget.item.width,
         child: Stack(
           clipBehavior: Clip.none,
           children: [
-            // Main Text Box Container
+            // Main Text Box Container (Fixed position and zero margin)
             GestureDetector(
               behavior: HitTestBehavior.translucent,
               onTap: () {
@@ -119,12 +122,6 @@ class _DraggableTextBoxWidgetState extends State<DraggableTextBoxWidget> {
                 }
               },
               child: Container(
-                margin: EdgeInsets.only(
-                  top: isSel ? handleSize / 2 : 0,
-                  right: isSel ? handleSize / 2 : 0,
-                  bottom: isSel ? handleSize / 2 : 0,
-                  left: isSel ? handleSize / 2 : 0,
-                ),
                 width: widget.item.width,
                 constraints: const BoxConstraints(minHeight: 34, minWidth: 80),
                 decoration: BoxDecoration(
@@ -134,7 +131,7 @@ class _DraggableTextBoxWidgetState extends State<DraggableTextBoxWidget> {
                   borderRadius: BorderRadius.circular(6),
                   border: Border.all(
                     color: isSel ? AppTheme.primaryColor : const Color(0xFFE2E8F0).withValues(alpha: 0.5),
-                    width: isSel ? 1.5 : 0.8,
+                    width: 1.5,
                   ),
                 ),
                 child: Padding(
@@ -145,7 +142,9 @@ class _DraggableTextBoxWidgetState extends State<DraggableTextBoxWidget> {
                     maxLines: null,
                     textAlign: widget.item.textAlign,
                     onTap: () {
-                      widget.onTap();
+                      if (!widget.isSelected) {
+                        widget.onTap();
+                      }
                     },
                     onChanged: widget.onTextChanged,
                     style: _getTextStyle(),
@@ -156,7 +155,7 @@ class _DraggableTextBoxWidgetState extends State<DraggableTextBoxWidget> {
                       enabledBorder: InputBorder.none,
                       focusedBorder: InputBorder.none,
                       fillColor: Colors.transparent,
-                      hintText: isSel ? 'متن خود را بنویسید...' : '',
+                      hintText: effectiveHint,
                       hintStyle: TextStyle(
                         fontSize: 11,
                         color: Colors.grey.shade400,
@@ -167,11 +166,11 @@ class _DraggableTextBoxWidgetState extends State<DraggableTextBoxWidget> {
               ),
             ),
 
-            // Top-Left Move Handle (Active when selected)
+            // Top-Left Move Handle (Active when selected, negative offset outside box)
             if (isSel)
               Positioned(
-                left: 0,
-                top: 0,
+                left: -handleSize / 2,
+                top: -handleSize / 2,
                 child: GestureDetector(
                   behavior: HitTestBehavior.opaque,
                   onPanUpdate: (details) {
@@ -202,11 +201,11 @@ class _DraggableTextBoxWidgetState extends State<DraggableTextBoxWidget> {
                 ),
               ),
 
-            // Top-Right Delete Handle (Active when selected)
+            // Top-Right Delete Handle (Active when selected, negative offset outside box)
             if (isSel)
               Positioned(
-                right: 0,
-                top: 0,
+                right: -handleSize / 2,
+                top: -handleSize / 2,
                 child: GestureDetector(
                   behavior: HitTestBehavior.opaque,
                   onTap: widget.onDelete,
@@ -235,11 +234,11 @@ class _DraggableTextBoxWidgetState extends State<DraggableTextBoxWidget> {
                 ),
               ),
 
-            // Bottom-Right Resize Handle (Active when selected)
+            // Bottom-Right Resize Handle (Active when selected, negative offset outside box)
             if (isSel)
               Positioned(
-                right: 0,
-                bottom: 0,
+                right: -handleSize / 2,
+                bottom: -handleSize / 2,
                 child: GestureDetector(
                   behavior: HitTestBehavior.opaque,
                   onPanUpdate: (details) {

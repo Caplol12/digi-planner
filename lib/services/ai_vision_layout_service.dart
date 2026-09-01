@@ -4,6 +4,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
+import 'package:image/image.dart' as img;
 import '../models/ai_layout_model.dart';
 import 'supabase_service.dart';
 
@@ -20,14 +21,31 @@ class ChatEditResponse {
 }
 
 class AiVisionLayoutService {
-  /// Downscales high-resolution template images proportionally to ~800px width
-  /// to dramatically reduce payload size (from 800KB+ to ~40KB) and speed up AI inference.
+  /// Optimizes, downscales and encodes image to JPEG (max 1024px, 80% quality)
+  /// for optimal AI Vision inference speed and lowest payload size.
   static Future<Uint8List> _optimizeImageForVision(Uint8List originalBytes) async {
     try {
-      if (originalBytes.lengthInBytes < 120 * 1024) {
-        return originalBytes;
+      final decoded = img.decodeImage(originalBytes);
+      if (decoded != null) {
+        img.Image resized = decoded;
+        const int maxDim = 1024;
+        if (decoded.width > maxDim || decoded.height > maxDim) {
+          if (decoded.width >= decoded.height) {
+            resized = img.copyResize(decoded, width: maxDim);
+          } else {
+            resized = img.copyResize(decoded, height: maxDim);
+          }
+        }
+        final jpegBytes = Uint8List.fromList(img.encodeJpg(resized, quality: 80));
+        debugPrint('⚡ Optimized vision image with package:image from ${originalBytes.lengthInBytes ~/ 1024}KB to ${jpegBytes.lengthInBytes ~/ 1024}KB');
+        return jpegBytes;
       }
+    } catch (e) {
+      debugPrint('ℹ️ Image package optimize note: $e');
+    }
 
+    // Fallback using flutter ui codec if package:image fails
+    try {
       final codec = await ui.instantiateImageCodec(
         originalBytes,
         targetWidth: 800,
@@ -36,13 +54,10 @@ class AiVisionLayoutService {
       final image = frame.image;
       final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
       if (byteData != null) {
-        final resized = byteData.buffer.asUint8List();
-        debugPrint('⚡ Optimized image from ${originalBytes.lengthInBytes ~/ 1024}KB to ${resized.lengthInBytes ~/ 1024}KB');
-        return resized;
+        return byteData.buffer.asUint8List();
       }
-    } catch (e) {
-      debugPrint('ℹ️ Image optimize note: $e');
-    }
+    } catch (_) {}
+
     return originalBytes;
   }
 
@@ -52,7 +67,7 @@ class AiVisionLayoutService {
     Uint8List? imageBytes,
     double aspectRatio = 2 / 3,
   }) async {
-    final config = await AiConfigService.getConfig(forceRefresh: true);
+    final config = await AiConfigService.getConfig(forceRefresh: false);
     List<DetectedBox>? detectedBoxes;
     final engineUsed = '${config.model} (Vision AI)';
 
@@ -106,41 +121,42 @@ class AiVisionLayoutService {
 
     final prompt = '''
 شما یک سیستم هوش مصنوعی متخصص در تحلیل ساختار و چیدمان صفحات ژورنال، پلنر و دفاتر برنامه‌ریزی هستید.
-تصویر این برگه را دقیق بررسی کن و تمام بخش‌ها، تیترها، کادرهای تاریخ، خطوط یادداشت، چک‌لیست‌ها و جدول‌ها را به صورت کادرهای استاندارد استخراج کن.
+تصویر این برگه را با دقت دیداری بسیار بالا تحلیل کن و تمام بخش‌های نوشتن، اسلات‌های ساعات، چک‌لیست‌های کار، کادرهای تاریخ، خطوط یادداشت و جدول‌ها را به صورت محدوده‌های ساختاریافته و تفکیک‌شده (Writing Zones) به ترتیب خواندن منطقی (از بالا به پایین و چپ به راست) استخراج کن.
 
 تمام مختصات باید نرمال‌شده (بین 0.0 تا 1.0) نسبت به کل عرض و ارتفاع تصویر باشند:
 - normalizedX: موقعیت شروع از چپ (0.0 تا 1.0)
 - normalizedY: موقعیت شروع از بالا (0.0 تا 1.0)
-- normalizedWidth: عرض کادر (0.0 تا 1.0)
-- normalizedHeight: ارتفاع کادر (0.0 تا 1.0)
+- normalizedWidth: عرض محدوده نوشتن (0.0 تا 1.0)
+- normalizedHeight: ارتفاع محدوده نوشتن (0.0 تا 1.0)
 
-نوع هر باکس (type) باید یکی از این مقادیر باشد:
-"singleLine" (برای عنوان، تاریخ، وضعیت، تیتر),
-"ruledLines" (برای خطوط یادداشت، جدول ساعات و نگارش),
-"checklist" (برای چک‌لیست تسک‌ها، کارها و عادات),
-"freeText" (برای یادداشت آزاد، تخلیه ذهن، باکس‌های متفرقه)
+نوع هر محدوده (type) باید یکی از این مقادیر باشد:
+"singleLine" (برای عنوان، تاریخ، اسلات تک‌خطی ساعات یا تیترها),
+"ruledLines" (برای خطوط یادداشت چندخطی، جدول‌ها و نگارش),
+"checklist" (برای آیتم‌ها و خطوط تسک‌ها، چک‌لیست‌ها و کارها),
+"freeText" (برای کادرهای یادداشت آزاد و تخلیه ذهن)
 
-خروجی را صرفاً در قالب یک شیء JSON استاندارد بدون هیچ توضیح و متن اضافی بازگردانید:
+خروجی را صرفاً در قالب یک شیء JSON استاندارد بدون هیچ توضیح اضافی بازگردانید:
 {
   "title": "عنوان شناسایی شده برگه",
   "boxes": [
     {
-      "id": "box_1",
-      "label": "عنوان کادر به فارسی",
+      "id": "zone_1",
+      "label": "عنوان بخش به فارسی",
       "type": "singleLine",
       "normalizedX": 0.08,
       "normalizedY": 0.04,
       "normalizedWidth": 0.84,
-      "normalizedHeight": 0.06,
+      "normalizedHeight": 0.05,
       "estimatedLines": 1,
       "placeholderText": "تاریخ: .... / .... / ....",
-      "fontSize": 13.0
+      "fontSize": 12.0
     }
   ]
 }
 ''';
 
-    final url = Uri.parse('${config.baseUrl}/chat/completions');
+    final cleanBaseUrl = config.baseUrl.replaceAll(RegExp(r'/+$'), '');
+    final url = Uri.parse('$cleanBaseUrl/chat/completions');
     final response = await http.post(
       url,
       headers: {
@@ -282,8 +298,13 @@ class AiVisionLayoutService {
         final normW = rawW.clamp(0.04, 1.0 - normX);
         final normH = rawH.clamp(0.025, 1.0 - normY);
 
+        final rawId = b['id']?.toString().trim();
+        final boxId = (rawId != null && rawId.isNotEmpty)
+            ? '${rawId}_$i'
+            : 'box_ai_${DateTime.now().millisecondsSinceEpoch}_$i';
+
         result.add(DetectedBox(
-          id: b['id']?.toString() ?? 'box_ai_${DateTime.now().millisecondsSinceEpoch}_$i',
+          id: boxId,
           label: b['label'] as String? ?? 'باکس متن',
           type: type,
           normalizedX: normX,
@@ -310,7 +331,7 @@ class AiVisionLayoutService {
     required String userCommand,
     required List<DetectedBox> currentBoxes,
   }) async {
-    final config = await AiConfigService.getConfig(forceRefresh: true);
+    final config = await AiConfigService.getConfig(forceRefresh: false);
 
     try {
       final boxesJson = currentBoxes.map((b) => b.toJson()).toList();
@@ -327,8 +348,9 @@ class AiVisionLayoutService {
 }
 ''';
 
+      final cleanBaseUrl = config.baseUrl.replaceAll(RegExp(r'/+$'), '');
       final response = await http.post(
-        Uri.parse('${config.baseUrl}/chat/completions'),
+        Uri.parse('$cleanBaseUrl/chat/completions'),
         headers: {
           'Authorization': 'Bearer ${config.apiKey}',
           'Content-Type': 'application/json',
@@ -364,7 +386,15 @@ class AiVisionLayoutService {
           final resObj = _cleanAndExtractJsonObject(content);
           if (resObj != null) {
             final rawBoxes = resObj['updatedBoxes'] as List? ?? [];
-            final updatedList = rawBoxes.map((item) => DetectedBox.fromJson(item as Map<String, dynamic>)).toList();
+            final updatedList = <DetectedBox>[];
+            for (int i = 0; i < rawBoxes.length; i++) {
+              final m = Map<String, dynamic>.from(rawBoxes[i] as Map);
+              final rawId = m['id']?.toString().trim();
+              m['id'] = (rawId != null && rawId.isNotEmpty)
+                  ? '${rawId}_$i'
+                  : 'box_chat_${DateTime.now().millisecondsSinceEpoch}_$i';
+              updatedList.add(DetectedBox.fromJson(m));
+            }
             final msg = resObj['assistantMessage'] as String? ?? 'تغییرات با موفقیت روی قالب اعمال شد.';
             final chips = (resObj['suggestionChips'] as List?)?.map((e) => e.toString()).toList() ?? [
               'یک چک‌لیست اولویت‌ها اضافه کن',
@@ -403,7 +433,7 @@ class AiVisionLayoutService {
 
     if (normalizedCmd.contains('چک‌لیست') || normalizedCmd.contains('تسک') || normalizedCmd.contains('todo') || normalizedCmd.contains('اولویت')) {
       final newBox = DetectedBox(
-        id: 'box_chat_todo_${DateTime.now().millisecondsSinceEpoch}',
+        id: 'box_chat_todo_${DateTime.now().millisecondsSinceEpoch}_${updatedList.length}',
         label: 'چک‌لیست اولویت‌ها',
         type: DetectedBoxType.checklist,
         normalizedX: 0.10,
@@ -442,7 +472,7 @@ class AiVisionLayoutService {
       reply = '✨ تمام باکس‌های متن بر اساس تقارن حاشیه استاندارد برگه تراز شدند.';
     } else if (normalizedCmd.contains('تاریخ') || normalizedCmd.contains('هدر') || normalizedCmd.contains('عنوان')) {
       final headerBox = DetectedBox(
-        id: 'box_chat_date_${DateTime.now().millisecondsSinceEpoch}',
+        id: 'box_chat_date_${DateTime.now().millisecondsSinceEpoch}_${updatedList.length}',
         label: 'کادر تاریخ و یادداشت روز',
         type: DetectedBoxType.singleLine,
         normalizedX: 0.10,
@@ -458,7 +488,7 @@ class AiVisionLayoutService {
       reply = '📅 کادر ویژه تاریخ و وضعیت روز در بالای برگه قرار گرفت.';
     } else {
       final generalBox = DetectedBox(
-        id: 'box_chat_gen_${DateTime.now().millisecondsSinceEpoch}',
+        id: 'box_chat_gen_${DateTime.now().millisecondsSinceEpoch}_${updatedList.length}',
         label: 'باکس متن درخواستی',
         type: DetectedBoxType.freeText,
         normalizedX: 0.15,

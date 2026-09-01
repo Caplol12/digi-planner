@@ -75,15 +75,22 @@ class DetectedBox {
     }
   }
 
+  static int _boxCounter = 0;
+
   TextBoxItem toTextBoxItem(Size canvasSize) {
     final dx = normalizedX * canvasSize.width;
     final dy = normalizedY * canvasSize.height;
     final width = (normalizedWidth * canvasSize.width).clamp(60.0, canvasSize.width);
     final height = (normalizedHeight * canvasSize.height).clamp(34.0, canvasSize.height);
 
+    final hint = placeholderText.isNotEmpty
+        ? placeholderText
+        : (label.isNotEmpty ? label : 'برای نوشتن در این بخش کلیک کنید...');
+
     return TextBoxItem(
       id: id,
-      text: placeholderText.isNotEmpty ? placeholderText : 'برای نوشتن در این بخش کلیک کنید...',
+      text: '', // Blank so the user can immediately type without clearing dummy text
+      hintText: hint,
       position: Offset(dx, dy),
       width: width,
       height: height,
@@ -123,8 +130,13 @@ class DetectedBox {
       orElse: () => DetectedBoxType.freeText,
     );
 
+    final rawId = json['id']?.toString().trim();
+    final effectiveId = (rawId != null && rawId.isNotEmpty)
+        ? rawId
+        : 'box_${DateTime.now().millisecondsSinceEpoch}_${++_boxCounter}';
+
     return DetectedBox(
-      id: json['id'] as String? ?? DateTime.now().millisecondsSinceEpoch.toString(),
+      id: effectiveId,
       label: json['label'] as String? ?? 'باکس متن',
       type: type,
       normalizedX: (json['normalizedX'] as num?)?.toDouble() ?? 0.1,
