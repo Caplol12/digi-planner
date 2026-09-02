@@ -1,4 +1,6 @@
+import 'dart:convert';
 import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 
@@ -22,12 +24,78 @@ class NotebookCoverWidget extends StatelessWidget {
     this.showLabel = true,
   });
 
+  Widget? _buildCoverImage() {
+    if (coverImagePath == null || coverImagePath!.trim().isEmpty) return null;
+    final path = coverImagePath!.trim();
+
+    // 1. Base64 Data URI (e.g. data:image/png;base64,...)
+    if (path.startsWith('data:image') || path.startsWith('data:')) {
+      try {
+        final commaIdx = path.indexOf(',');
+        final base64Str = commaIdx != -1 ? path.substring(commaIdx + 1) : path;
+        final bytes = base64Decode(base64Str);
+        return Image.memory(
+          bytes,
+          fit: BoxFit.cover,
+          errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+        );
+      } catch (_) {
+        return null;
+      }
+    }
+
+    // 2. Asset image
+    if (path.startsWith('assets/')) {
+      return Image.asset(
+        path,
+        fit: BoxFit.cover,
+        errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+      );
+    }
+
+    // 3. Network URL
+    if (path.startsWith('http://') || path.startsWith('https://')) {
+      return Image.network(
+        path,
+        fit: BoxFit.cover,
+        errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+      );
+    }
+
+    // 4. Local File (only on native platforms, never on Web)
+    if (!kIsWeb) {
+      try {
+        final file = File(path);
+        if (file.existsSync()) {
+          return Image.file(
+            file,
+            fit: BoxFit.cover,
+            errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+          );
+        }
+      } catch (_) {}
+    }
+
+    // 5. Fallback: try raw base64 decode if string is pure base64
+    try {
+      final bytes = base64Decode(path);
+      return Image.memory(
+        bytes,
+        fit: BoxFit.cover,
+        errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+      );
+    } catch (_) {}
+
+    return null;
+  }
+
   @override
   Widget build(BuildContext context) {
     // Generate a slightly darker spine color
     final HSLColor hsl = HSLColor.fromColor(coverColor);
     final Color spineColor = hsl.withLightness((hsl.lightness - 0.18).clamp(0.0, 1.0)).toColor();
     final Color spineHighlight = hsl.withLightness((hsl.lightness + 0.10).clamp(0.0, 1.0)).toColor();
+    final coverImageWidget = _buildCoverImage();
 
     return Container(
       width: width,
@@ -79,12 +147,9 @@ class NotebookCoverWidget extends StatelessWidget {
             ),
 
             // Custom Image if selected from gallery
-            if (coverImagePath != null && File(coverImagePath!).existsSync())
+            if (coverImageWidget != null)
               Positioned.fill(
-                child: Image.file(
-                  File(coverImagePath!),
-                  fit: BoxFit.cover,
-                ),
+                child: coverImageWidget,
               ),
 
             // Subtle texture/sheen overlay

@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:intl/intl.dart';
@@ -7,6 +8,7 @@ import '../models/template_model.dart';
 import '../models/page_style_model.dart';
 import '../models/text_box_model.dart';
 import '../models/sticker_model.dart';
+import '../models/drawing_stroke_model.dart';
 import '../services/notebook_storage_service.dart';
 import '../widgets/interactive_template_sheet.dart';
 import '../widgets/floating_editor_dock.dart';
@@ -23,7 +25,7 @@ class NotebookPageFlipScreen extends StatefulWidget {
   const NotebookPageFlipScreen({
     super.key,
     required this.notebook,
-    this.initialPageIndex = 0,
+    required this.initialPageIndex,
     required this.onNotebookChanged,
   });
 
@@ -33,10 +35,9 @@ class NotebookPageFlipScreen extends StatefulWidget {
 
 class _NotebookPageFlipScreenState extends State<NotebookPageFlipScreen> {
   late NotebookModel _notebook;
-  late PageController _pageController;
   late int _currentPageIndex;
+  late PageController _pageController;
 
-  // Active page editing controllers
   late TextEditingController _titleController;
   late TextEditingController _bodyController;
   late TextEditingController _cueController;
@@ -48,9 +49,18 @@ class _NotebookPageFlipScreenState extends State<NotebookPageFlipScreen> {
   Color _currentInkColor = const Color(0xFF1E2024);
   double _currentFontSize = 14.0;
   String _currentFontName = 'Vazirmatn';
-  final bool _isBold = false;
+  bool _isBold = false;
+  bool _isItalic = false;
+  bool _isUnderline = false;
   TextAlign _textAlign = TextAlign.right;
   Color? _currentHighlightColor;
+
+  // Freehand Drawing State
+  bool _isDrawingMode = false;
+  bool _isHighlighter = false;
+  bool _isEraser = false;
+  double _penStrokeWidth = 3.0;
+  DrawingStroke? _currentStroke;
 
   // Undo / Redo History Stacks
   final List<NotebookPageModel> _undoStack = [];
@@ -372,15 +382,24 @@ class _NotebookPageFlipScreenState extends State<NotebookPageFlipScreen> {
       final result = await FilePicker.pickFiles(
         type: FileType.image,
         allowMultiple: false,
+        withData: true,
       );
 
       if (result != null && result.files.isNotEmpty) {
-        final path = result.files.first.path;
-        if (path != null) {
+        final picked = result.files.first;
+        String? imageUri;
+        if (picked.bytes != null) {
+          final b64 = base64Encode(picked.bytes!);
+          imageUri = 'data:image/png;base64,$b64';
+        } else if (picked.path != null) {
+          imageUri = picked.path;
+        }
+
+        if (imageUri != null) {
           _recordHistoryState();
           final newSticker = StickerItem(
             id: 'st_img_${DateTime.now().millisecondsSinceEpoch}',
-            imagePath: path,
+            imagePath: imageUri,
             position: const Offset(80, 140),
             scale: 1.5,
             isSelected: true,
@@ -712,6 +731,287 @@ class _NotebookPageFlipScreenState extends State<NotebookPageFlipScreen> {
     }
   }
 
+  void _toggleCheckItem(String id) {
+    _recordHistoryState();
+    if (_currentPageIndex < _notebook.pages.length) {
+      final page = _notebook.pages[_currentPageIndex];
+      final idx = page.checkItems.indexWhere((c) => c.id == id);
+      if (idx != -1) {
+        setState(() {
+          page.checkItems[idx] = page.checkItems[idx].copyWith(
+            isChecked: !page.checkItems[idx].isChecked,
+          );
+        });
+        _saveNotebook();
+      }
+    }
+  }
+
+  void _goToPrevField() {
+    if (_currentPageIndex >= _notebook.pages.length) return;
+    final page = _notebook.pages[_currentPageIndex];
+    if (page.textBoxes.isEmpty) return;
+
+    int newIdx = 0;
+    if (_selectedTextBoxId != null) {
+      final curIdx = page.textBoxes.indexWhere((b) => b.id == _selectedTextBoxId);
+      if (curIdx > 0) {
+        newIdx = curIdx - 1;
+      } else {
+        newIdx = page.textBoxes.length - 1;
+      }
+    }
+    setState(() {
+      _selectedTextBoxId = page.textBoxes[newIdx].id;
+      _selectedStickerId = null;
+    });
+  }
+
+  void _goToNextField() {
+    if (_currentPageIndex >= _notebook.pages.length) return;
+    final page = _notebook.pages[_currentPageIndex];
+    if (page.textBoxes.isEmpty) return;
+
+    int newIdx = 0;
+    if (_selectedTextBoxId != null) {
+      final curIdx = page.textBoxes.indexWhere((b) => b.id == _selectedTextBoxId);
+      if (curIdx != -1 && curIdx + 1 < page.textBoxes.length) {
+        newIdx = curIdx + 1;
+      } else {
+        newIdx = 0;
+      }
+    }
+    setState(() {
+      _selectedTextBoxId = page.textBoxes[newIdx].id;
+      _selectedStickerId = null;
+    });
+  }
+
+  void _togglePenMode() {
+    setState(() {
+      if (_isDrawingMode && !_isHighlighter && !_isEraser) {
+        _isDrawingMode = false;
+      } else {
+        _isDrawingMode = true;
+        _isHighlighter = false;
+        _isEraser = false;
+        _penStrokeWidth = 3.0;
+        _selectedTextBoxId = null;
+        _selectedStickerId = null;
+      }
+    });
+  }
+
+  void _toggleHighlighterMode() {
+    setState(() {
+      if (_isDrawingMode && _isHighlighter) {
+        _isDrawingMode = false;
+      } else {
+        _isDrawingMode = true;
+        _isHighlighter = true;
+        _isEraser = false;
+        _penStrokeWidth = 16.0;
+        _selectedTextBoxId = null;
+        _selectedStickerId = null;
+      }
+    });
+  }
+
+  void _toggleEraserMode() {
+    setState(() {
+      if (_isDrawingMode && _isEraser) {
+        _isDrawingMode = false;
+      } else {
+        _isDrawingMode = true;
+        _isHighlighter = false;
+        _isEraser = true;
+        _penStrokeWidth = 20.0;
+        _selectedTextBoxId = null;
+        _selectedStickerId = null;
+      }
+    });
+  }
+
+  void _cycleStrokeWidth() {
+    setState(() {
+      if (_isHighlighter) {
+        if (_penStrokeWidth < 16) {
+          _penStrokeWidth = 16;
+        } else if (_penStrokeWidth < 24) {
+          _penStrokeWidth = 24;
+        } else {
+          _penStrokeWidth = 10;
+        }
+      } else if (_isEraser) {
+        if (_penStrokeWidth < 20) {
+          _penStrokeWidth = 20;
+        } else if (_penStrokeWidth < 35) {
+          _penStrokeWidth = 35;
+        } else {
+          _penStrokeWidth = 14;
+        }
+      } else {
+        if (_penStrokeWidth <= 2.5) {
+          _penStrokeWidth = 4.0;
+        } else if (_penStrokeWidth <= 4.5) {
+          _penStrokeWidth = 8.0;
+        } else if (_penStrokeWidth <= 8.5) {
+          _penStrokeWidth = 14.0;
+        } else {
+          _penStrokeWidth = 2.0;
+        }
+      }
+    });
+  }
+
+  void _selectQuickColor(Color color) {
+    _recordHistoryState();
+    setState(() {
+      _currentInkColor = color;
+      if (_currentPageIndex < _notebook.pages.length && _selectedTextBoxId != null) {
+        final box = _notebook.pages[_currentPageIndex].textBoxes.firstWhere((b) => b.id == _selectedTextBoxId);
+        box.inkColor = color;
+      }
+    });
+    _saveNotebook();
+  }
+
+  void _undoLastStroke() {
+    if (_currentPageIndex >= _notebook.pages.length) return;
+    final page = _notebook.pages[_currentPageIndex];
+    if (page.drawingStrokes.isNotEmpty) {
+      _recordHistoryState();
+      setState(() {
+        page.drawingStrokes.removeLast();
+      });
+      _saveNotebook();
+    }
+  }
+
+  void _onDrawingPanStart(Offset localPos) {
+    if (!_isDrawingMode || _currentPageIndex >= _notebook.pages.length) return;
+    final page = _notebook.pages[_currentPageIndex];
+
+    if (_isEraser) {
+      _eraseNearPoint(localPos, page);
+      return;
+    }
+
+    _recordHistoryState();
+    final newStroke = DrawingStroke(
+      id: 'stk_${DateTime.now().millisecondsSinceEpoch}',
+      points: [DrawingPoint.fromOffset(localPos)],
+      color: _currentInkColor,
+      strokeWidth: _penStrokeWidth,
+      isHighlighter: _isHighlighter,
+    );
+
+    setState(() {
+      _currentStroke = newStroke;
+    });
+  }
+
+  void _onDrawingPanUpdate(Offset localPos) {
+    if (!_isDrawingMode || _currentPageIndex >= _notebook.pages.length) return;
+    final page = _notebook.pages[_currentPageIndex];
+
+    if (_isEraser) {
+      _eraseNearPoint(localPos, page);
+      return;
+    }
+
+    if (_currentStroke != null) {
+      setState(() {
+        _currentStroke!.points.add(DrawingPoint.fromOffset(localPos));
+      });
+    }
+  }
+
+  void _onDrawingPanEnd() {
+    if (!_isDrawingMode || _currentPageIndex >= _notebook.pages.length) return;
+    final page = _notebook.pages[_currentPageIndex];
+
+    if (_currentStroke != null) {
+      setState(() {
+        page.drawingStrokes.add(_currentStroke!);
+        _currentStroke = null;
+      });
+      _saveNotebook();
+    }
+  }
+
+  void _eraseNearPoint(Offset localPos, NotebookPageModel page) {
+    final threshold = _penStrokeWidth;
+    bool modified = false;
+    page.drawingStrokes.removeWhere((stroke) {
+      for (final pt in stroke.points) {
+        final dist = (Offset(pt.x, pt.y) - localPos).distance;
+        if (dist <= threshold + stroke.strokeWidth) {
+          modified = true;
+          return true;
+        }
+      }
+      return false;
+    });
+    if (modified) {
+      setState(() {});
+      _saveNotebook();
+    }
+  }
+
+  void _toggleBold() {
+    _recordHistoryState();
+    setState(() {
+      _isBold = !_isBold;
+      if (_currentPageIndex < _notebook.pages.length && _selectedTextBoxId != null) {
+        final box = _notebook.pages[_currentPageIndex].textBoxes.firstWhere((b) => b.id == _selectedTextBoxId);
+        box.isBold = _isBold;
+      }
+    });
+    _saveNotebook();
+  }
+
+  void _toggleItalic() {
+    _recordHistoryState();
+    setState(() {
+      _isItalic = !_isItalic;
+    });
+    _saveNotebook();
+  }
+
+  void _toggleUnderline() {
+    _recordHistoryState();
+    setState(() {
+      _isUnderline = !_isUnderline;
+    });
+    _saveNotebook();
+  }
+
+  void _insertChecklistBullet() {
+    _recordHistoryState();
+    if (_selectedTextBoxId != null && _currentPageIndex < _notebook.pages.length) {
+      final box = _notebook.pages[_currentPageIndex].textBoxes.firstWhere((b) => b.id == _selectedTextBoxId);
+      setState(() {
+        box.text = '☐ ${box.text}';
+      });
+      _saveNotebook();
+      return;
+    }
+    final text = _bodyController.text;
+    final selection = _bodyController.selection;
+    const bullet = '☐ ';
+    if (selection.isValid && selection.start >= 0) {
+      final newText = text.replaceRange(selection.start, selection.end, bullet);
+      _bodyController.value = TextEditingValue(
+        text: newText,
+        selection: TextSelection.collapsed(offset: selection.start + bullet.length),
+      );
+    } else {
+      _bodyController.text = '$bullet$text';
+    }
+    _syncActivePageData();
+  }
+
   @override
   void dispose() {
     _disposeControllers();
@@ -983,6 +1283,13 @@ class _NotebookPageFlipScreenState extends State<NotebookPageFlipScreen> {
                         pageStyle: page.template == null ? page.pageStyle : null,
                         textBoxes: page.textBoxes,
                         stickers: page.stickers,
+                        checkItems: page.checkItems,
+                        drawingStrokes: page.drawingStrokes,
+                        currentStroke: isActive ? _currentStroke : null,
+                        isDrawingMode: isActive ? _isDrawingMode : false,
+                        onDrawingStart: _onDrawingPanStart,
+                        onDrawingUpdate: _onDrawingPanUpdate,
+                        onDrawingEnd: _onDrawingPanEnd,
                         selectedTextBoxId: isActive ? _selectedTextBoxId : null,
                         selectedStickerId: isActive ? _selectedStickerId : null,
                         noteTitleController: isActive ? _titleController : null,
@@ -994,7 +1301,9 @@ class _NotebookPageFlipScreenState extends State<NotebookPageFlipScreen> {
                         inkColor: _currentInkColor,
                         textAlign: _textAlign,
                         isBold: _isBold,
+                        isItalic: _isItalic,
                         highlightColor: _currentHighlightColor,
+                        onToggleCheckItem: _toggleCheckItem,
                         onSelectTextBox: (id) {
                           setState(() {
                             _selectedTextBoxId = id;
@@ -1050,11 +1359,13 @@ class _NotebookPageFlipScreenState extends State<NotebookPageFlipScreen> {
                           _saveNotebook();
                         },
                         onCanvasTap: (offset) {
-                          setState(() {
-                            _selectedTextBoxId = null;
-                            _selectedStickerId = null;
-                          });
-                          FocusManager.instance.primaryFocus?.unfocus();
+                          if (!_isDrawingMode) {
+                            setState(() {
+                              _selectedTextBoxId = null;
+                              _selectedStickerId = null;
+                            });
+                            FocusManager.instance.primaryFocus?.unfocus();
+                          }
                         },
                       ),
                     ),
@@ -1064,13 +1375,13 @@ class _NotebookPageFlipScreenState extends State<NotebookPageFlipScreen> {
             },
           ),
 
-          // PlanWiz Floating Dock in Normal Canvas Mode (Centered at bottom)
-          if (!isEndPage && !isEditingText)
+          // PlanWiz Floating Dock in Normal Canvas Mode (when not editing text and not in drawing mode)
+          if (!isEndPage && !isEditingText && !_isDrawingMode)
             Align(
               alignment: Alignment.bottomCenter,
               child: FloatingEditorDock(
                 onAddText: _addTextBoxToActivePage,
-                onDrawOrStyle: _openPageStyleSelector,
+                onDrawOrStyle: _togglePenMode,
                 onAddImage: _showAddImageMenu,
                 onMoreTools: _showStickersSheet,
               ),
@@ -1078,15 +1389,33 @@ class _NotebookPageFlipScreenState extends State<NotebookPageFlipScreen> {
         ],
       ),
 
-      // Text Formatting Toolbar in Text Editing Mode (Directly Above Keyboard)
-      bottomNavigationBar: (!isEndPage && isEditingText)
+      // Text Formatting & Drawing Toolbar (when editing text OR in drawing mode)
+      bottomNavigationBar: (!isEndPage && (isEditingText || _isDrawingMode))
           ? TextFormattingToolbar(
               fontSize: _currentFontSize,
               inkColor: _currentInkColor,
               textAlign: _textAlign,
+              isBold: _isBold,
+              isItalic: _isItalic,
+              isUnderline: _isUnderline,
+              isDrawingMode: _isDrawingMode,
+              isHighlighter: _isHighlighter,
+              isEraser: _isEraser,
+              penStrokeWidth: _penStrokeWidth,
+              onTogglePen: _togglePenMode,
+              onToggleHighlighter: _toggleHighlighterMode,
+              onToggleEraser: _toggleEraserMode,
+              onStrokeWidthTap: _cycleStrokeWidth,
+              onUndoDrawing: _undoLastStroke,
+              onQuickColorSelected: _selectQuickColor,
+              onColorTap: _showColorPicker,
+              onToggleBold: _toggleBold,
+              onToggleItalic: _toggleItalic,
+              onToggleUnderline: _toggleUnderline,
+              onPrevField: _goToPrevField,
+              onNextField: _goToNextField,
               onFontTap: _showFontPickerSheet,
               onFontSizeTap: _changeFontSize,
-              onColorTap: _showColorPicker,
               onAlignTap: () {
                 _recordHistoryState();
                 setState(() {
@@ -1096,10 +1425,16 @@ class _NotebookPageFlipScreenState extends State<NotebookPageFlipScreen> {
                 });
               },
               onNumberedListTap: _appendNumberedListItem,
+              onChecklistTap: _insertChecklistBullet,
               onInsertTimeTap: _insertCurrentTimeToActiveField,
+              onStickersTap: _showStickersSheet,
               onCloseKeyboard: () {
+                setState(() {
+                  _isDrawingMode = false;
+                  _selectedTextBoxId = null;
+                  _selectedStickerId = null;
+                });
                 FocusManager.instance.primaryFocus?.unfocus();
-                setState(() => _selectedTextBoxId = null);
               },
             )
           : null,

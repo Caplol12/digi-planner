@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import '../theme/app_theme.dart';
 
@@ -15,86 +17,96 @@ class CustomBottomNavBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final bottomInset = math.max(MediaQuery.of(context).padding.bottom, kIsWeb ? 16.0 : 12.0);
+
     return Container(
       decoration: BoxDecoration(
         color: Colors.white,
         border: const Border(top: BorderSide(color: AppTheme.dividerLight, width: 1)),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withValues(alpha: 0.04),
+            color: Colors.black.withValues(alpha: 0.08),
             blurRadius: 16,
             offset: const Offset(0, -4),
           ),
         ],
       ),
-      child: SafeArea(
-        top: false,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-            children: [
-              // 1. My Planners / Journals
-              _buildNavItem(
-                index: 0,
-                icon: Icons.menu_book_outlined,
-                activeIcon: Icons.menu_book_rounded,
-                label: 'ژورنال‌ها',
-              ),
-
-              // 2. Central Prominent Create Button
-              GestureDetector(
-                onTap: onCreatePressed,
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Container(
-                      width: 48,
-                      height: 48,
-                      decoration: BoxDecoration(
-                        gradient: const LinearGradient(
-                          colors: [Color(0xFFFF8A65), AppTheme.primaryColor],
-                          begin: Alignment.topLeft,
-                          end: Alignment.bottomRight,
-                        ),
-                        shape: BoxShape.circle,
-                        boxShadow: [
-                          BoxShadow(
-                            color: AppTheme.primaryColor.withValues(alpha: 0.35),
-                            blurRadius: 10,
-                            offset: const Offset(0, 4),
-                          ),
-                        ],
-                      ),
-                      child: const Icon(
-                        Icons.add_rounded,
-                        color: Colors.white,
-                        size: 28,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    const Text(
-                      'ایجاد',
-                      style: TextStyle(
-                        fontSize: 10,
-                        fontWeight: FontWeight.bold,
-                        color: AppTheme.primaryColor,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-
-              // 3. Templates
-              _buildNavItem(
-                index: 1,
-                icon: Icons.style_outlined,
-                activeIcon: Icons.style_rounded,
-                label: 'قالب‌ها',
-              ),
-            ],
+      padding: EdgeInsets.only(
+        left: 12,
+        right: 12,
+        top: 6,
+        bottom: bottomInset,
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+        children: [
+          // 1. My Planners / Journals
+          Expanded(
+            child: _buildNavItem(
+              index: 0,
+              icon: Icons.menu_book_outlined,
+              activeIcon: Icons.menu_book_rounded,
+              label: 'ژورنال‌ها',
+            ),
           ),
-        ),
+
+          // 2. Central Prominent Create Button
+          InkWell(
+            onTap: onCreatePressed,
+            borderRadius: BorderRadius.circular(30),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: 46,
+                    height: 46,
+                    decoration: BoxDecoration(
+                      gradient: const LinearGradient(
+                        colors: [Color(0xFFFF8A65), AppTheme.primaryColor],
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                      ),
+                      shape: BoxShape.circle,
+                      boxShadow: [
+                        BoxShadow(
+                          color: AppTheme.primaryColor.withValues(alpha: 0.35),
+                          blurRadius: 10,
+                          offset: const Offset(0, 4),
+                        ),
+                      ],
+                    ),
+                    child: const Icon(
+                      Icons.add_rounded,
+                      color: Colors.white,
+                      size: 28,
+                    ),
+                  ),
+                  const SizedBox(height: 3),
+                  const Text(
+                    'ایجاد',
+                    style: TextStyle(
+                      fontSize: 10.5,
+                      fontWeight: FontWeight.bold,
+                      color: AppTheme.primaryColor,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+
+          // 3. Templates
+          Expanded(
+            child: _buildNavItem(
+              index: 1,
+              icon: Icons.style_outlined,
+              activeIcon: Icons.style_rounded,
+              label: 'قالب‌ها',
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -106,13 +118,13 @@ class CustomBottomNavBar extends StatelessWidget {
     required String label,
   }) {
     final isSelected = currentIndex == index;
-    final color = isSelected ? AppTheme.primaryColor : Colors.grey.shade500;
+    final color = isSelected ? AppTheme.primaryColor : Colors.grey.shade600;
 
     return InkWell(
       onTap: () => onTap(index),
       borderRadius: BorderRadius.circular(12),
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+        padding: const EdgeInsets.symmetric(vertical: 4),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -121,7 +133,7 @@ class CustomBottomNavBar extends StatelessWidget {
               color: color,
               size: 24,
             ),
-            const SizedBox(height: 4),
+            const SizedBox(height: 3),
             Text(
               label,
               style: TextStyle(

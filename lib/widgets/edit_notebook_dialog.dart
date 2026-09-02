@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -80,12 +81,18 @@ class _EditNotebookDialogState extends State<EditNotebookDialog> {
       final result = await FilePicker.pickFiles(
         type: FileType.image,
         allowMultiple: false,
+        withData: true,
       );
       if (result != null && result.files.isNotEmpty) {
-        final path = result.files.first.path;
-        if (path != null) {
+        final picked = result.files.first;
+        if (picked.bytes != null) {
+          final b64 = base64Encode(picked.bytes!);
           setState(() {
-            _coverImagePath = path;
+            _coverImagePath = 'data:image/png;base64,$b64';
+          });
+        } else if (picked.path != null) {
+          setState(() {
+            _coverImagePath = picked.path;
           });
         }
       }

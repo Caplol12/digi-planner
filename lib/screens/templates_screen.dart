@@ -189,7 +189,7 @@ class _TemplatesScreenState extends State<TemplatesScreen> {
                   : ResponsiveLayout.isDesktop(context) || ResponsiveLayout.isTablet(context)
                       ? GridView.builder(
                           controller: _scrollController,
-                          padding: const EdgeInsets.only(left: 16, right: 16, top: 12, bottom: 80),
+                          padding: const EdgeInsets.only(left: 16, right: 16, top: 12, bottom: 110),
                           gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
                             crossAxisCount: ResponsiveLayout.getGridColumnCount(context, tabletCount: 2, desktopCount: 3),
                             childAspectRatio: 0.68,
@@ -208,7 +208,7 @@ class _TemplatesScreenState extends State<TemplatesScreen> {
                         )
                       : ListView.builder(
                           controller: _scrollController,
-                          padding: const EdgeInsets.only(top: 8, bottom: 80),
+                          padding: const EdgeInsets.only(top: 8, bottom: 110),
                           itemCount: filteredTemplates.length,
                           itemBuilder: (context, index) {
                             final template = filteredTemplates[index];
@@ -230,7 +230,7 @@ class _TemplatesScreenState extends State<TemplatesScreen> {
         if (_showScrollToTop)
           Positioned(
             right: 20,
-            bottom: 20,
+            bottom: 110,
             child: FloatingActionButton.small(
               heroTag: 'scroll_top_templates',
               onPressed: _scrollToTop,

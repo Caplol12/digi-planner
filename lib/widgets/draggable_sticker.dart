@@ -1,4 +1,6 @@
+import 'dart:convert';
 import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import '../models/sticker_model.dart';
 
@@ -19,6 +21,49 @@ class DraggableStickerWidget extends StatelessWidget {
     required this.onTap,
     required this.onDelete,
   });
+
+  Widget _buildStickerImage(String path, double size) {
+    if (path.startsWith('data:image') || path.startsWith('data:')) {
+      try {
+        final commaIdx = path.indexOf(',');
+        final b64 = commaIdx != -1 ? path.substring(commaIdx + 1) : path;
+        return Image.memory(
+          base64Decode(b64),
+          width: size,
+          height: size,
+          fit: BoxFit.cover,
+          errorBuilder: (ctx, err, stack) => const Icon(Icons.broken_image_rounded, color: Colors.grey),
+        );
+      } catch (_) {}
+    }
+
+    if (path.startsWith('assets/')) {
+      return Image.asset(
+        path,
+        width: size,
+        height: size,
+        fit: BoxFit.cover,
+        errorBuilder: (ctx, err, stack) => const Icon(Icons.broken_image_rounded, color: Colors.grey),
+      );
+    }
+
+    if (!kIsWeb) {
+      try {
+        final file = File(path);
+        if (file.existsSync()) {
+          return Image.file(
+            file,
+            width: size,
+            height: size,
+            fit: BoxFit.cover,
+            errorBuilder: (ctx, err, stack) => const Icon(Icons.broken_image_rounded, color: Colors.grey),
+          );
+        }
+      } catch (_) {}
+    }
+
+    return const Icon(Icons.broken_image_rounded, color: Colors.grey);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -58,13 +103,7 @@ class DraggableStickerWidget extends StatelessWidget {
                   child: hasImage
                       ? ClipRRect(
                           borderRadius: BorderRadius.circular(8),
-                          child: Image.file(
-                            File(item.imagePath!),
-                            width: currentSize,
-                            height: currentSize,
-                            fit: BoxFit.cover,
-                            errorBuilder: (ctx, err, stack) => const Icon(Icons.broken_image_rounded, color: Colors.grey),
-                          ),
+                          child: _buildStickerImage(item.imagePath!, currentSize),
                         )
                       : Text(
                           item.content,

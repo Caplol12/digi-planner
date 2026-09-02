@@ -55,6 +55,27 @@ class JournalTemplate {
     this.isFavorite = false,
   });
 
+  static final Map<String, JournalTemplate> _registeredTemplates = {};
+
+  static void registerTemplates(Iterable<JournalTemplate> templates) {
+    for (final t in templates) {
+      _registeredTemplates[t.id] = t;
+    }
+  }
+
+  static void registerTemplate(JournalTemplate template) {
+    _registeredTemplates[template.id] = template;
+  }
+
+  static JournalTemplate? findTemplateById(String? id) {
+    if (id == null || id.isEmpty) return null;
+    try {
+      return sampleTemplates.firstWhere((t) => t.id == id);
+    } catch (_) {
+      return _registeredTemplates[id];
+    }
+  }
+
   Map<String, dynamic> toJson() => {
         'id': id,
         'title': title,

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'theme/app_theme.dart';
 import 'screens/main_navigation_screen.dart';
 
@@ -30,10 +31,33 @@ class JournalApp extends StatefulWidget {
 class _JournalAppState extends State<JournalApp> {
   ThemeMode _themeMode = ThemeMode.light;
 
-  void _toggleTheme() {
+  @override
+  void initState() {
+    super.initState();
+    _loadSavedTheme();
+  }
+
+  Future<void> _loadSavedTheme() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final isDark = prefs.getBool('is_dark_mode') ?? false;
+      if (mounted) {
+        setState(() {
+          _themeMode = isDark ? ThemeMode.dark : ThemeMode.light;
+        });
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _toggleTheme() async {
+    final nextMode = _themeMode == ThemeMode.light ? ThemeMode.dark : ThemeMode.light;
     setState(() {
-      _themeMode = _themeMode == ThemeMode.light ? ThemeMode.dark : ThemeMode.light;
+      _themeMode = nextMode;
     });
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool('is_dark_mode', nextMode == ThemeMode.dark);
+    } catch (_) {}
   }
 
   @override

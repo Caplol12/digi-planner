@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:file_picker/file_picker.dart';
 import 'dart:convert';
 import 'dart:io';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../models/notebook_model.dart';
 import '../models/template_model.dart';
 import '../models/page_style_model.dart';
@@ -279,22 +281,17 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
   }
 
   void _saveNotebookToGallery(NotebookModel notebook) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('دفترچه «${notebook.title}» به صورت تصویر آماده و در گالری ذخیره شد.'),
-        behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-      ),
-    );
+    _saveNotebookPdf(notebook);
   }
 
   Future<void> _saveNotebookPdf(NotebookModel notebook) async {
     try {
-      final file = await NotebookExportService.instance.exportHtmlPrintableDocument(notebook);
+      final res = await NotebookExportService.instance.exportHtmlPrintableDocument(notebook);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('سند PDF / پرینت ساخته شد: ${file.path.split(RegExp(r'[\\/]')).last}'),
+            content: Text(res.userMessage),
+            backgroundColor: res.isSuccess ? const Color(0xFF2E7D32) : Colors.red.shade700,
             behavior: SnackBarBehavior.floating,
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
           ),
@@ -313,24 +310,29 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
     _saveNotebookPdf(notebook);
   }
 
-  void _shareNotebook(NotebookModel notebook) {
+  Future<void> _shareNotebook(NotebookModel notebook) async {
     final text = NotebookExportService.instance.formatNotebookAsText(notebook);
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('متن کامل و خلاصه دفترچه «${notebook.title}» آماده اشتراک شد (${text.length} کاراکتر).'),
-        behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-      ),
-    );
+    await Clipboard.setData(ClipboardData(text: text));
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('متن کامل و خلاصه دفترچه «${notebook.title}» در حافظه موقت (Clipboard) کپی شد (${text.length} کاراکتر).'),
+          behavior: SnackBarBehavior.floating,
+          backgroundColor: const Color(0xFF2E7D32),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        ),
+      );
+    }
   }
 
   Future<void> _exportNotebookBackup(NotebookModel notebook) async {
     try {
-      final file = await NotebookExportService.instance.exportJsonBackup(notebook);
+      final res = await NotebookExportService.instance.exportJsonBackup(notebook);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('فایل پشتیبان JSON ذخیره شد: ${file.path.split(RegExp(r'[\\/]')).last}'),
+            content: Text(res.userMessage),
+            backgroundColor: res.isSuccess ? const Color(0xFF2E7D32) : Colors.red.shade700,
             behavior: SnackBarBehavior.floating,
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
           ),
@@ -345,15 +347,21 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
     }
   }
 
-  void _setNotebookToWidget(NotebookModel notebook) {
+  Future<void> _setNotebookToWidget(NotebookModel notebook) async {
     NotebookExportService.instance.setActiveWidgetNotebook(notebook.id);
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('دفترچه «${notebook.title}» به عنوان ویجت فعال انتخاب شد.'),
-        behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-      ),
-    );
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('active_widget_notebook_id', notebook.id);
+    } catch (_) {}
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('دفترچه «${notebook.title}» به عنوان ویجت فعال انتخاب شد.'),
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        ),
+      );
+    }
   }
 
   void _addNotebookToBook(NotebookModel notebook) {
@@ -539,26 +547,44 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
       context,
       MaterialPageRoute(
         builder: (context) => ProTemplateBuilderScreen(
-          onJournalCreated: (newJournal) {
+          onJournalCreated: (newJournal) async {
+            // Refresh custom templates list from storage
+            final customTmpls = await NotebookStorageService.instance.loadCustomTemplates();
+            for (final ct in customTmpls) {
+              if (!_templates.any((t) => t.id == ct.id)) {
+                _templates.insert(0, ct);
+              }
+            }
+
+            String? resolvedTemplateId;
+            try {
+              final decoded = jsonDecode(newJournal.content);
+              if (decoded is Map<String, dynamic> && decoded['templateId'] != null) {
+                resolvedTemplateId = decoded['templateId'] as String?;
+              }
+            } catch (_) {}
+            resolvedTemplateId ??= customTmpls.isNotEmpty ? customTmpls.first.id : null;
+
+            final page = NotebookPageModel.fromJournalContent(
+              id: 'p_${DateTime.now().millisecondsSinceEpoch}',
+              title: newJournal.title,
+              content: newJournal.content,
+              templateId: resolvedTemplateId,
+            );
+
             final newNotebook = NotebookModel(
               id: 'nb_${DateTime.now().millisecondsSinceEpoch}',
               title: newJournal.title,
               coverColor: const Color(0xFFFF7043),
-              pages: [
-                NotebookPageModel(
-                  id: 'p_${DateTime.now().millisecondsSinceEpoch}',
-                  title: newJournal.title,
-                  noteTitle: newJournal.title,
-                  noteBody: newJournal.content,
-                ),
-              ],
+              pages: [page],
             );
 
             setState(() {
               _notebooks.insert(0, newNotebook);
               _currentIndex = 0;
             });
-            NotebookStorageService.instance.saveNotebooks(_notebooks);
+            await NotebookStorageService.instance.saveNotebooks(_notebooks);
+            _openNotebookDetail(newNotebook);
           },
         ),
       ),

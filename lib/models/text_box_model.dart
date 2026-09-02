@@ -18,6 +18,12 @@ class TextBoxItem {
   Color? highlightColor;
   bool isSelected;
 
+  // Normalized coordinates (0.0 to 1.0) relative to sheet/template canvas
+  double? normalizedX;
+  double? normalizedY;
+  double? normalizedWidth;
+  double? normalizedHeight;
+
   TextBoxItem({
     required this.id,
     this.text = '',
@@ -33,6 +39,10 @@ class TextBoxItem {
     this.isItalic = false,
     this.highlightColor,
     this.isSelected = true,
+    this.normalizedX,
+    this.normalizedY,
+    this.normalizedWidth,
+    this.normalizedHeight,
   });
 
   Map<String, dynamic> toJson() => {
@@ -50,6 +60,10 @@ class TextBoxItem {
         'isBold': isBold,
         'isItalic': isItalic,
         'highlightColor': highlightColor?.toARGB32(),
+        if (normalizedX != null) 'nx': normalizedX,
+        if (normalizedY != null) 'ny': normalizedY,
+        if (normalizedWidth != null) 'nw': normalizedWidth,
+        if (normalizedHeight != null) 'nh': normalizedHeight,
       };
 
   factory TextBoxItem.fromJson(Map<String, dynamic> json) => TextBoxItem(
@@ -68,6 +82,10 @@ class TextBoxItem {
         isBold: json['isBold'] ?? false,
         isItalic: json['isItalic'] ?? false,
         highlightColor: json['highlightColor'] != null ? Color(json['highlightColor']) : null,
+        normalizedX: (json['nx'] as num?)?.toDouble() ?? (json['normalizedX'] as num?)?.toDouble(),
+        normalizedY: (json['ny'] as num?)?.toDouble() ?? (json['normalizedY'] as num?)?.toDouble(),
+        normalizedWidth: (json['nw'] as num?)?.toDouble() ?? (json['normalizedWidth'] as num?)?.toDouble(),
+        normalizedHeight: (json['nh'] as num?)?.toDouble() ?? (json['normalizedHeight'] as num?)?.toDouble(),
       );
 
   TextBoxItem copyWith({
@@ -85,6 +103,10 @@ class TextBoxItem {
     bool? isItalic,
     Color? highlightColor,
     bool? isSelected,
+    double? normalizedX,
+    double? normalizedY,
+    double? normalizedWidth,
+    double? normalizedHeight,
   }) {
     return TextBoxItem(
       id: id ?? this.id,
@@ -101,7 +123,10 @@ class TextBoxItem {
       isItalic: isItalic ?? this.isItalic,
       highlightColor: highlightColor ?? this.highlightColor,
       isSelected: isSelected ?? this.isSelected,
+      normalizedX: normalizedX ?? this.normalizedX,
+      normalizedY: normalizedY ?? this.normalizedY,
+      normalizedWidth: normalizedWidth ?? this.normalizedWidth,
+      normalizedHeight: normalizedHeight ?? this.normalizedHeight,
     );
   }
 }
-

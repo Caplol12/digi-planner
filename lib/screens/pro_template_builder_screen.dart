@@ -2,14 +2,18 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:file_picker/file_picker.dart';
 import '../models/ai_layout_model.dart';
 import '../models/template_model.dart';
 import '../models/journal_model.dart';
 import '../services/ai_vision_layout_service.dart';
 import '../services/notebook_export_service.dart';
+import '../services/notebook_storage_service.dart';
 import '../services/supabase_service.dart';
+import '../services/user_ai_preferences_service.dart';
 import '../widgets/pro_badge.dart';
+import '../widgets/interactive_check_box_widget.dart';
 import '../theme/app_theme.dart';
 import 'journal_editor_screen.dart';
 
@@ -31,6 +35,7 @@ class _ProTemplateBuilderScreenState extends State<ProTemplateBuilderScreen> {
   String _selectedImagePath = 'assets/templates/daily_planner.jpg';
   Uint8List? _selectedImageBytes;
   String? _selectedFileName;
+  double _detectedImageAspectRatio = 2 / 3;
 
   bool _isAnalyzing = false;
   AILayoutResult? _analysisResult;
@@ -54,6 +59,7 @@ class _ProTemplateBuilderScreenState extends State<ProTemplateBuilderScreen> {
   }
 
   Future<void> _refreshAiConfig() async {
+    await UserAiPreferencesService.ensureLoaded();
     await AiConfigService.getConfig(forceRefresh: false);
     if (mounted) {
       setState(() {});
@@ -76,10 +82,23 @@ class _ProTemplateBuilderScreenState extends State<ProTemplateBuilderScreen> {
 
       if (result != null && result.files.isNotEmpty) {
         final file = result.files.first;
+        double? detectedRatio;
+        if (file.bytes != null && file.bytes!.isNotEmpty) {
+          try {
+            final decoded = await decodeImageFromList(file.bytes!);
+            if (decoded.height > 0) {
+              detectedRatio = decoded.width / decoded.height;
+            }
+          } catch (_) {}
+        }
+
         setState(() {
           _selectedImageBytes = file.bytes;
           _selectedImagePath = file.path ?? '';
           _selectedFileName = file.name;
+          if (detectedRatio != null) {
+            _detectedImageAspectRatio = detectedRatio;
+          }
         });
 
         if (mounted) {
@@ -122,17 +141,34 @@ class _ProTemplateBuilderScreenState extends State<ProTemplateBuilderScreen> {
       final result = await AiVisionLayoutService.detectLayout(
         imagePath: _selectedImagePath,
         imageBytes: _selectedImageBytes,
-        aspectRatio: 2 / 3,
+        aspectRatio: _detectedImageAspectRatio,
       );
 
       if (mounted) {
+        final boxCount = result.detectedBoxes.length;
+        final checkCount = result.checkpoints.length;
+        String countMsg = 'هوش مصنوعی تصویر برگه را اسکن کرد (${result.analysisEngine}) و $boxCount باکس متن';
+        if (checkCount > 0) {
+          countMsg += ' و $checkCount نقطه تیک‌زدنی هوشمند';
+        }
+        countMsg += ' متناسب با خطوط و بخش‌ها قرار داد.';
+
         setState(() {
-          _analysisResult = result;
+          _analysisResult = AILayoutResult(
+            imagePath: result.imagePath,
+            imageBytes: _selectedImageBytes,
+            aspectRatio: result.aspectRatio,
+            title: result.title,
+            detectedBoxes: result.detectedBoxes,
+            checkpoints: result.checkpoints,
+            analysisEngine: result.analysisEngine,
+            detectedAt: result.detectedAt,
+          );
           _isAnalyzing = false;
           _chatHistory.clear();
           _chatHistory.add({
             'role': 'ai',
-            'text': 'هوش مصنوعی تصویر برگه را اسکن کرد (${result.analysisEngine}) و ${_analysisResult!.detectedBoxes.length} باکس متن متناسب با خطوط و بخش‌ها قرار داد.',
+            'text': countMsg,
           });
         });
       }
@@ -169,9 +205,11 @@ class _ProTemplateBuilderScreenState extends State<ProTemplateBuilderScreen> {
         _isChatLoading = false;
         _analysisResult = AILayoutResult(
           imagePath: _analysisResult!.imagePath,
+          imageBytes: _analysisResult!.imageBytes ?? _selectedImageBytes,
           aspectRatio: _analysisResult!.aspectRatio,
           title: _analysisResult!.title,
           detectedBoxes: res.updatedBoxes,
+          checkpoints: _analysisResult!.checkpoints,
           analysisEngine: _analysisResult!.analysisEngine,
         );
         _chatHistory.add({'role': 'ai', 'text': res.assistantMessage});
@@ -183,15 +221,26 @@ class _ProTemplateBuilderScreenState extends State<ProTemplateBuilderScreen> {
   void _proceedToEditor() {
     if (_analysisResult == null) return;
 
-    // Convert detected boxes into actual TextBoxItems for the editor canvas
-    const canvasSize = Size(420, 630);
+    final actualAspectRatio = _analysisResult!.aspectRatio > 0
+        ? _analysisResult!.aspectRatio
+        : _detectedImageAspectRatio;
+    const canvasWidth = 420.0;
+    final canvasHeight = canvasWidth / actualAspectRatio;
+    final canvasSize = Size(canvasWidth, canvasHeight);
+
+    // Convert detected boxes into actual TextBoxItems for the editor canvas (keeping normalized coordinates)
     final textBoxes = _analysisResult!.detectedBoxes.map((b) => b.toTextBoxItem(canvasSize)).toList();
+    final checkItems = _analysisResult!.checkpoints;
+    final templateId = 'ai_template_${DateTime.now().millisecondsSinceEpoch}';
+
     final serializedData = jsonEncode({
+      'templateId': templateId,
       'textBoxes': textBoxes.map((b) => b.toJson()).toList(),
+      'checkItems': checkItems.map((c) => c.toJson()).toList(),
     });
 
     final customTemplate = JournalTemplate(
-      id: 'ai_template_${DateTime.now().millisecondsSinceEpoch}',
+      id: templateId,
       title: _selectedFileName != null ? 'قالب ${_selectedFileName!}' : 'قالب هوش مصنوعی',
       categoryId: 'ai_custom',
       subtitle: 'طراحی شده با AI Vision و باکس‌های متنی تطبیقی',
@@ -202,12 +251,23 @@ class _ProTemplateBuilderScreenState extends State<ProTemplateBuilderScreen> {
       imageBytes: _selectedImageBytes,
       tags: ['AI Vision', 'قالب حرفه‌ای', 'طراحی خودکار'],
       sections: [],
+      aspectRatio: actualAspectRatio,
     );
+
+    // Persist custom template to storage registry so it is reusable and resolves in NotebookPageModel
+    NotebookStorageService.instance.saveOrUpdateCustomTemplate(customTemplate);
+
+    final boxCount = _analysisResult!.detectedBoxes.length;
+    final checkCount = _analysisResult!.checkpoints.length;
+    String subInfo = 'شناسایی $boxCount باکس متن';
+    if (checkCount > 0) {
+      subInfo += ' و $checkCount چک‌باکس هوشمند';
+    }
 
     final initialJournal = JournalItem(
       id: 'ai_journal_${DateTime.now().millisecondsSinceEpoch}',
       title: _selectedFileName != null ? 'ژورنال ${_selectedFileName!}' : 'قالب اختصاصی هوش مصنوعی',
-      subtitle: 'شناسایی خودکار ${_analysisResult!.detectedBoxes.length} باکس متن',
+      subtitle: subInfo,
       category: 'قالب حرفه‌ای',
       createdAt: DateTime.now(),
       pageCount: 1,
@@ -235,12 +295,12 @@ class _ProTemplateBuilderScreenState extends State<ProTemplateBuilderScreen> {
   Future<void> _exportAiLayoutToJson() async {
     if (_analysisResult == null) return;
     try {
-      final file = await NotebookExportService.instance.exportAiLayoutToJson(_analysisResult!);
+      final res = await NotebookExportService.instance.exportAiLayoutToJson(_analysisResult!);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('✨ فایل JSON چیدمان لایه‌باز ذخیره شد:\n${file.path}'),
-            backgroundColor: const Color(0xFF2E7D32),
+            content: Text(res.userMessage),
+            backgroundColor: res.isSuccess ? const Color(0xFF2E7D32) : Colors.red.shade700,
             behavior: SnackBarBehavior.floating,
             duration: const Duration(seconds: 4),
           ),
@@ -268,16 +328,84 @@ class _ProTemplateBuilderScreenState extends State<ProTemplateBuilderScreen> {
         final fileStr = bytes != null ? utf8.decode(bytes) : await File(result.files.first.path!).readAsString();
         final importRes = NotebookExportService.instance.importPackageFromJson(fileStr);
 
-        if (importRes.isSuccess && (importRes.aiLayout != null || importRes.template != null)) {
+        if (importRes.isSuccess && (importRes.aiLayout != null || importRes.template != null || importRes.page != null)) {
           setState(() {
             _currentStep = 1;
             if (importRes.aiLayout != null) {
               _analysisResult = importRes.aiLayout;
+              if (importRes.aiLayout!.imageBytes != null) {
+                _selectedImageBytes = importRes.aiLayout!.imageBytes;
+              }
+              if (importRes.aiLayout!.imagePath.isNotEmpty) {
+                _selectedImagePath = importRes.aiLayout!.imagePath;
+              }
+              _detectedImageAspectRatio = importRes.aiLayout!.aspectRatio;
+            } else if (importRes.page != null) {
+              final tmpl = importRes.template ?? (importRes.page!.templateId != null ? JournalTemplate.findTemplateById(importRes.page!.templateId) : null);
+              if (tmpl != null) {
+                _selectedImageBytes = tmpl.imageBytes;
+                _selectedImagePath = tmpl.imageAsset ?? '';
+                _selectedFileName = tmpl.title;
+                _detectedImageAspectRatio = tmpl.aspectRatio;
+              }
+              final detectedBoxes = importRes.page!.textBoxes.map((b) => DetectedBox(
+                id: b.id,
+                label: b.text.isNotEmpty ? b.text : (b.hintText.isNotEmpty ? b.hintText : 'باکس متن'),
+                type: DetectedBoxType.freeText,
+                normalizedX: b.normalizedX ?? 0.1,
+                normalizedY: b.normalizedY ?? 0.1,
+                normalizedWidth: b.normalizedWidth ?? 0.8,
+                normalizedHeight: b.normalizedHeight ?? 0.08,
+                placeholderText: b.text.isNotEmpty ? b.text : b.hintText,
+                fontSize: b.fontSize,
+                fontName: b.fontName,
+                inkColor: b.inkColor,
+                textAlign: b.textAlign,
+                isBold: b.isBold,
+              )).toList();
+
+              _analysisResult = AILayoutResult(
+                imagePath: _selectedImagePath,
+                imageBytes: _selectedImageBytes,
+                aspectRatio: _detectedImageAspectRatio,
+                title: importRes.page!.title,
+                detectedBoxes: detectedBoxes,
+                checkpoints: importRes.page!.checkItems,
+                analysisEngine: 'Imported Page Layers',
+                detectedAt: DateTime.now(),
+              );
             } else if (importRes.template != null) {
               final tmpl = importRes.template!;
               _selectedImageBytes = tmpl.imageBytes;
               _selectedImagePath = tmpl.imageAsset ?? '';
               _selectedFileName = tmpl.title;
+              _detectedImageAspectRatio = tmpl.aspectRatio;
+
+              final detectedBoxes = <DetectedBox>[];
+              for (int i = 0; i < tmpl.sections.length; i++) {
+                final s = tmpl.sections[i];
+                detectedBoxes.add(DetectedBox(
+                  id: 'sec_$i',
+                  label: s.title,
+                  type: DetectedBoxType.ruledLines,
+                  normalizedX: 0.1,
+                  normalizedY: 0.15 + (i * 0.2),
+                  normalizedWidth: 0.8,
+                  normalizedHeight: 0.15,
+                  placeholderText: s.items.join('\n'),
+                ));
+              }
+
+              _analysisResult = AILayoutResult(
+                imagePath: _selectedImagePath,
+                imageBytes: _selectedImageBytes,
+                aspectRatio: _detectedImageAspectRatio,
+                title: tmpl.title,
+                detectedBoxes: detectedBoxes,
+                checkpoints: [],
+                analysisEngine: 'Imported Template',
+                detectedAt: DateTime.now(),
+              );
             }
           });
           if (mounted) {
@@ -302,20 +430,791 @@ class _ProTemplateBuilderScreenState extends State<ProTemplateBuilderScreen> {
     }
   }
 
+  void _showAiSettingsBottomSheet() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) {
+        AiProviderType tempProvider = UserAiPreferencesService.activeProvider;
+        String tempSelectedModel = UserAiPreferencesService.rawModelSelection;
+        final keyController = TextEditingController(text: UserAiPreferencesService.geminiApiKey);
+        final customModelController = TextEditingController(text: UserAiPreferencesService.customModelName);
+        bool obscureKey = true;
+        bool isTesting = false;
+        GeminiConnectionTestResult? testResult;
+
+        return StatefulBuilder(
+          builder: (context, setSheetState) {
+            final isGoogleSelected = tempProvider == AiProviderType.googleAiStudio;
+
+            return Container(
+              margin: EdgeInsets.only(
+                top: 40,
+                bottom: MediaQuery.of(context).viewInsets.bottom,
+              ),
+              decoration: const BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+              ),
+              child: ConstrainedBox(
+                constraints: BoxConstraints(
+                  maxHeight: MediaQuery.of(context).size.height * 0.85,
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    // Drag Handle
+                    Container(
+                      margin: const EdgeInsets.only(top: 12, bottom: 8),
+                      width: 44,
+                      height: 4,
+                      decoration: BoxDecoration(
+                        color: Colors.grey.shade300,
+                        borderRadius: BorderRadius.circular(2),
+                      ),
+                    ),
+
+                    // Header
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                      child: Row(
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.all(8),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFFFF1EB),
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: const Icon(Icons.tune_rounded, color: Color(0xFFFF7043), size: 20),
+                          ),
+                          const SizedBox(width: 12),
+                          const Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'تنظیمات موتور هوش مصنوعی',
+                                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: Color(0xFF1E293B)),
+                                ),
+                                SizedBox(height: 2),
+                                Text(
+                                  'انتخاب بین سیستم پیش‌فرض یا کلید شخصی Google AI Studio',
+                                  style: TextStyle(fontSize: 11.5, color: Color(0xFF64748B)),
+                                ),
+                              ],
+                            ),
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.close_rounded, color: Color(0xFF64748B)),
+                            onPressed: () => Navigator.pop(sheetContext),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const Divider(height: 1, color: Color(0xFFE2E8F0)),
+
+                    // Scrollable Body
+                    Expanded(
+                      child: SingleChildScrollView(
+                        padding: const EdgeInsets.all(20),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              'ارائه‌دهنده سرویس هوش مصنوعی:',
+                              style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Color(0xFF334155)),
+                            ),
+                            const SizedBox(height: 12),
+
+                            // Option 1: Developer Default AI
+                            _buildProviderSelectCard(
+                              isSelected: tempProvider == AiProviderType.developer,
+                              title: 'هوش مصنوعی پیش‌فرض برنامه (توسعه‌دهنده)',
+                              subtitle: 'بدون نیاز به وارد کردن کلید شخصی؛ کاملاً رایگان و آماده به کار',
+                              badgeText: 'رایگان و پیش‌فرض',
+                              badgeColor: const Color(0xFF2E7D32),
+                              icon: Icons.cloud_done_rounded,
+                              iconColor: const Color(0xFF2E7D32),
+                              onTap: () {
+                                setSheetState(() {
+                                  tempProvider = AiProviderType.developer;
+                                });
+                              },
+                            ),
+                            const SizedBox(height: 12),
+
+                            // Option 2: Google AI Studio (Personal Key)
+                            _buildProviderSelectCard(
+                              isSelected: tempProvider == AiProviderType.googleAiStudio,
+                              title: 'Google AI Studio (کلید شخصی شما)',
+                              subtitle: 'اتصال مستقیم به مدل‌های Gemini با سهمیه رایگان شخصی خودتان',
+                              badgeText: 'پیشنهادی برای سرعت و دقت بالاتر',
+                              badgeColor: const Color(0xFF1565C0),
+                              icon: Icons.auto_awesome_rounded,
+                              iconColor: const Color(0xFF1565C0),
+                              onTap: () {
+                                setSheetState(() {
+                                  tempProvider = AiProviderType.googleAiStudio;
+                                });
+                              },
+                            ),
+
+                            // Google AI Studio Details
+                            if (isGoogleSelected) ...[
+                              const SizedBox(height: 20),
+                              Container(
+                                padding: const EdgeInsets.all(16),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFFF8FAFC),
+                                  borderRadius: BorderRadius.circular(16),
+                                  border: Border.all(color: const Color(0xFFE2E8F0)),
+                                ),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    const Row(
+                                      children: [
+                                        Icon(Icons.smart_toy_outlined, size: 18, color: Color(0xFF1565C0)),
+                                        SizedBox(width: 8),
+                                        Text(
+                                          'انتخاب مدل جمنای (Gemini Model):',
+                                          style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Color(0xFF1E293B)),
+                                        ),
+                                      ],
+                                    ),
+                                    const SizedBox(height: 10),
+
+                                    // Model Dropdown
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 14),
+                                      decoration: BoxDecoration(
+                                        color: Colors.white,
+                                        borderRadius: BorderRadius.circular(12),
+                                        border: Border.all(color: const Color(0xFFCBD5E1)),
+                                      ),
+                                      child: DropdownButtonHideUnderline(
+                                        child: DropdownButton<String>(
+                                          value: tempSelectedModel,
+                                          isExpanded: true,
+                                          icon: const Icon(Icons.keyboard_arrow_down_rounded, color: Color(0xFF64748B)),
+                                          items: [
+                                            ...UserAiPreferencesService.availableModels.map((m) {
+                                              return DropdownMenuItem<String>(
+                                                value: m.id,
+                                                child: Row(
+                                                  children: [
+                                                    Expanded(
+                                                      child: Column(
+                                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                                        mainAxisAlignment: MainAxisAlignment.center,
+                                                        children: [
+                                                          Text(
+                                                            m.displayName,
+                                                            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Color(0xFF1E293B)),
+                                                          ),
+                                                          Text(
+                                                            m.description,
+                                                            style: TextStyle(fontSize: 10.5, color: Colors.grey.shade600),
+                                                            maxLines: 1,
+                                                            overflow: TextOverflow.ellipsis,
+                                                          ),
+                                                        ],
+                                                      ),
+                                                    ),
+                                                    if (m.isRecommended)
+                                                      Container(
+                                                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                                        decoration: BoxDecoration(
+                                                          color: const Color(0xFFE3F2FD),
+                                                          borderRadius: BorderRadius.circular(6),
+                                                        ),
+                                                        child: const Text(
+                                                          'پیشنهادی',
+                                                          style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF1565C0)),
+                                                        ),
+                                                      ),
+                                                  ],
+                                                ),
+                                              );
+                                            }),
+                                            const DropdownMenuItem<String>(
+                                              value: 'custom',
+                                              child: Text('مدل دلخواه... (Custom Model Name)', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
+                                            ),
+                                          ],
+                                          onChanged: (val) {
+                                            if (val != null) {
+                                              setSheetState(() {
+                                                tempSelectedModel = val;
+                                              });
+                                            }
+                                          },
+                                        ),
+                                      ),
+                                    ),
+
+                                    // Custom model field
+                                    if (tempSelectedModel == 'custom') ...[
+                                      const SizedBox(height: 10),
+                                      TextField(
+                                        controller: customModelController,
+                                        style: const TextStyle(fontSize: 13),
+                                        decoration: InputDecoration(
+                                          hintText: 'نام مدل، مثلاً gemini-2.0-flash-lite',
+                                          labelText: 'نام دقیق مدل',
+                                          isDense: true,
+                                          filled: true,
+                                          fillColor: Colors.white,
+                                          border: OutlineInputBorder(
+                                            borderRadius: BorderRadius.circular(10),
+                                            borderSide: const BorderSide(color: Color(0xFFCBD5E1)),
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+
+                                    const SizedBox(height: 18),
+                                    const Row(
+                                      children: [
+                                        Icon(Icons.key_rounded, size: 18, color: Color(0xFF1565C0)),
+                                        SizedBox(width: 8),
+                                        Text(
+                                          'کلید اختصاصی API Key:',
+                                          style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Color(0xFF1E293B)),
+                                        ),
+                                      ],
+                                    ),
+                                    const SizedBox(height: 10),
+
+                                    // API Key Field
+                                    TextField(
+                                      controller: keyController,
+                                      obscureText: obscureKey,
+                                      style: const TextStyle(fontSize: 13, fontFamily: 'monospace'),
+                                      decoration: InputDecoration(
+                                        hintText: 'AIzaSy...',
+                                        filled: true,
+                                        fillColor: Colors.white,
+                                        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                                        border: OutlineInputBorder(
+                                          borderRadius: BorderRadius.circular(12),
+                                          borderSide: const BorderSide(color: Color(0xFFCBD5E1)),
+                                        ),
+                                        enabledBorder: OutlineInputBorder(
+                                          borderRadius: BorderRadius.circular(12),
+                                          borderSide: const BorderSide(color: Color(0xFFCBD5E1)),
+                                        ),
+                                        focusedBorder: OutlineInputBorder(
+                                          borderRadius: BorderRadius.circular(12),
+                                          borderSide: const BorderSide(color: Color(0xFF1565C0), width: 1.5),
+                                        ),
+                                        suffixIcon: Row(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            IconButton(
+                                              icon: Icon(
+                                                obscureKey ? Icons.visibility_outlined : Icons.visibility_off_outlined,
+                                                size: 19,
+                                                color: Colors.grey.shade600,
+                                              ),
+                                              onPressed: () {
+                                                setSheetState(() => obscureKey = !obscureKey);
+                                              },
+                                              tooltip: obscureKey ? 'نمایش کلید' : 'مخفی‌سازی کلید',
+                                            ),
+                                            IconButton(
+                                              icon: const Icon(Icons.content_paste_rounded, size: 19, color: Color(0xFF1565C0)),
+                                              onPressed: () async {
+                                                final data = await Clipboard.getData(Clipboard.kTextPlain);
+                                                if (data?.text != null && data!.text!.isNotEmpty) {
+                                                  keyController.text = data.text!.trim();
+                                                  setSheetState(() {});
+                                                }
+                                              },
+                                              tooltip: 'جای‌گذاری از کلیپ‌بورد',
+                                            ),
+                                            if (keyController.text.isNotEmpty)
+                                              IconButton(
+                                                icon: const Icon(Icons.clear_rounded, size: 18, color: Colors.grey),
+                                                onPressed: () {
+                                                  keyController.clear();
+                                                  setSheetState(() {});
+                                                },
+                                              ),
+                                          ],
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(height: 6),
+                                    const Text(
+                                      '🔒 کلید شما تنها در حافظه امن همین دستگاه ذخیره می‌شود و در اختیار شخص دیگری قرار نمی‌گیرد.',
+                                      style: TextStyle(fontSize: 10.5, color: Color(0xFF64748B)),
+                                    ),
+
+                                    const SizedBox(height: 14),
+
+                                    // Guide Link
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                                      decoration: BoxDecoration(
+                                        color: const Color(0xFFEFF6FF),
+                                        borderRadius: BorderRadius.circular(10),
+                                        border: Border.all(color: const Color(0xFFBFDBFE)),
+                                      ),
+                                      child: Row(
+                                        children: [
+                                          const Icon(Icons.info_outline_rounded, color: Color(0xFF1D4ED8), size: 18),
+                                          const SizedBox(width: 8),
+                                          const Expanded(
+                                            child: Text(
+                                              'هنوز کلید ندارید؟ دریافت رایگان از:\naistudio.google.com',
+                                              style: TextStyle(fontSize: 11, color: Color(0xFF1E40AF), height: 1.3),
+                                            ),
+                                          ),
+                                          TextButton.icon(
+                                            onPressed: () {
+                                              Clipboard.setData(const ClipboardData(text: 'https://aistudio.google.com/app/apikey'));
+                                              ScaffoldMessenger.of(sheetContext).showSnackBar(
+                                                const SnackBar(
+                                                  content: Text('آدرس aistudio.google.com در کلیپ‌بورد کپی شد.'),
+                                                  behavior: SnackBarBehavior.floating,
+                                                  duration: Duration(seconds: 2),
+                                                ),
+                                              );
+                                            },
+                                            icon: const Icon(Icons.copy_rounded, size: 14),
+                                            label: const Text('کپی آدرس', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+                                            style: TextButton.styleFrom(
+                                              foregroundColor: const Color(0xFF1D4ED8),
+                                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                              minimumSize: Size.zero,
+                                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+
+                                    const SizedBox(height: 16),
+
+                                    // Test Connection Button
+                                    SizedBox(
+                                      width: double.infinity,
+                                      child: OutlinedButton.icon(
+                                        onPressed: isTesting
+                                            ? null
+                                            : () async {
+                                                final inputKey = keyController.text.trim();
+                                                if (inputKey.isEmpty) {
+                                                  setSheetState(() {
+                                                    testResult = const GeminiConnectionTestResult(
+                                                      isSuccess: false,
+                                                      message: 'لطفاً ابتدا کلید API را وارد کنید.',
+                                                    );
+                                                  });
+                                                  return;
+                                                }
+
+                                                setSheetState(() {
+                                                  isTesting = true;
+                                                  testResult = null;
+                                                });
+
+                                                final targetModel = tempSelectedModel == 'custom'
+                                                    ? customModelController.text.trim()
+                                                    : tempSelectedModel;
+
+                                                final res = await UserAiPreferencesService.testGeminiConnection(
+                                                  apiKey: inputKey,
+                                                  model: targetModel.isNotEmpty ? targetModel : 'gemini-2.5-flash',
+                                                );
+
+                                                setSheetState(() {
+                                                  isTesting = false;
+                                                  testResult = res;
+                                                });
+                                              },
+                                        icon: isTesting
+                                            ? const SizedBox(
+                                                width: 16,
+                                                height: 16,
+                                                child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF1565C0)),
+                                              )
+                                            : const Icon(Icons.network_check_rounded, size: 18),
+                                        label: Text(
+                                          isTesting ? 'در حال برقراری ارتباط...' : 'تست اتصال به سرور Google AI',
+                                          style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold),
+                                        ),
+                                        style: OutlinedButton.styleFrom(
+                                          foregroundColor: const Color(0xFF1565C0),
+                                          side: const BorderSide(color: Color(0xFF90CAF9)),
+                                          padding: const EdgeInsets.symmetric(vertical: 11),
+                                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                                        ),
+                                      ),
+                                    ),
+
+                                    // Test Result Banner
+                                    if (testResult != null) ...[
+                                      const SizedBox(height: 10),
+                                      Container(
+                                        padding: const EdgeInsets.all(12),
+                                        decoration: BoxDecoration(
+                                          color: testResult!.isSuccess ? const Color(0xFFE8F5E9) : const Color(0xFFFFEBEE),
+                                          borderRadius: BorderRadius.circular(10),
+                                          border: Border.all(
+                                            color: testResult!.isSuccess ? const Color(0xFFA5D6A7) : const Color(0xFFFFCDD2),
+                                          ),
+                                        ),
+                                        child: Row(
+                                          crossAxisAlignment: CrossAxisAlignment.start,
+                                          children: [
+                                            Icon(
+                                              testResult!.isSuccess ? Icons.check_circle_rounded : Icons.error_outline_rounded,
+                                              size: 18,
+                                              color: testResult!.isSuccess ? const Color(0xFF2E7D32) : const Color(0xFFC62828),
+                                            ),
+                                            const SizedBox(width: 8),
+                                            Expanded(
+                                              child: Text(
+                                                testResult!.message,
+                                                style: TextStyle(
+                                                  fontSize: 11.5,
+                                                  fontWeight: FontWeight.w600,
+                                                  color: testResult!.isSuccess ? const Color(0xFF1B5E20) : const Color(0xFFB71C1C),
+                                                  height: 1.3,
+                                                ),
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ],
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
+                    ),
+
+                    // Actions
+                    Container(
+                      padding: const EdgeInsets.all(16),
+                      decoration: const BoxDecoration(
+                        color: Colors.white,
+                        border: Border(top: BorderSide(color: Color(0xFFE2E8F0))),
+                      ),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: OutlinedButton(
+                              onPressed: () => Navigator.pop(sheetContext),
+                              style: OutlinedButton.styleFrom(
+                                padding: const EdgeInsets.symmetric(vertical: 13),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                side: const BorderSide(color: Color(0xFFCBD5E1)),
+                              ),
+                              child: const Text('انصراف', style: TextStyle(color: Color(0xFF475569), fontWeight: FontWeight.bold)),
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            flex: 2,
+                            child: ElevatedButton.icon(
+                              onPressed: () async {
+                                if (tempProvider == AiProviderType.googleAiStudio && keyController.text.trim().isEmpty) {
+                                  ScaffoldMessenger.of(sheetContext).showSnackBar(
+                                    const SnackBar(
+                                      content: Text('لطفاً کلید API را وارد کنید یا گزینه سرور پیش‌فرض را انتخاب فرمایید.'),
+                                      backgroundColor: Color(0xFFC62828),
+                                      behavior: SnackBarBehavior.floating,
+                                    ),
+                                  );
+                                  return;
+                                }
+
+                                final messenger = ScaffoldMessenger.of(context);
+                                final navigator = Navigator.of(sheetContext);
+
+                                await UserAiPreferencesService.savePreferences(
+                                  providerType: tempProvider,
+                                  geminiApiKey: keyController.text.trim(),
+                                  geminiModel: tempSelectedModel,
+                                  customModelName: customModelController.text.trim(),
+                                );
+
+                                if (mounted) {
+                                  setState(() {});
+                                  navigator.pop();
+                                  messenger.showSnackBar(
+                                    SnackBar(
+                                      content: Row(
+                                        children: [
+                                          const Icon(Icons.check_circle_rounded, color: Colors.white, size: 20),
+                                          const SizedBox(width: 8),
+                                          Expanded(
+                                            child: Text(
+                                              tempProvider == AiProviderType.googleAiStudio
+                                                  ? 'موتور هوش مصنوعی به Google AI Studio (${UserAiPreferencesService.geminiModel}) تغییر یافت.'
+                                                  : 'موتور هوش مصنوعی به سرور پیش‌فرض توسعه‌دهنده تغییر یافت.',
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                      backgroundColor: const Color(0xFF2E7D32),
+                                      behavior: SnackBarBehavior.floating,
+                                      duration: const Duration(seconds: 3),
+                                    ),
+                                  );
+                                }
+                              },
+                              icon: const Icon(Icons.check_rounded, size: 18),
+                              label: const Text('ذخیره و اعمال تنظیمات', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: isGoogleSelected ? const Color(0xFF1565C0) : const Color(0xFFFF7043),
+                                foregroundColor: Colors.white,
+                                padding: const EdgeInsets.symmetric(vertical: 13),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                elevation: 2,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Widget _buildProviderSelectCard({
+    required bool isSelected,
+    required String title,
+    required String subtitle,
+    required String badgeText,
+    required Color badgeColor,
+    required IconData icon,
+    required Color iconColor,
+    required VoidCallback onTap,
+  }) {
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: isSelected ? badgeColor.withValues(alpha: 0.05) : Colors.white,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(
+            color: isSelected ? badgeColor : const Color(0xFFE2E8F0),
+            width: isSelected ? 1.8 : 1.0,
+          ),
+          boxShadow: isSelected
+              ? [
+                  BoxShadow(
+                    color: badgeColor.withValues(alpha: 0.1),
+                    blurRadius: 8,
+                    offset: const Offset(0, 2),
+                  ),
+                ]
+              : null,
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              margin: const EdgeInsets.only(top: 2),
+              width: 20,
+              height: 20,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                border: Border.all(
+                  color: isSelected ? badgeColor : Colors.grey.shade400,
+                  width: 2,
+                ),
+                color: isSelected ? badgeColor : Colors.transparent,
+              ),
+              child: isSelected
+                  ? const Center(child: Icon(Icons.circle, size: 8, color: Colors.white))
+                  : null,
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(icon, size: 16, color: iconColor),
+                      const SizedBox(width: 6),
+                      Expanded(
+                        child: Text(
+                          title,
+                          style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: isSelected ? FontWeight.w800 : FontWeight.bold,
+                            color: const Color(0xFF1E293B),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    subtitle,
+                    style: TextStyle(fontSize: 11, color: Colors.grey.shade600, height: 1.3),
+                  ),
+                  const SizedBox(height: 6),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: badgeColor.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: Text(
+                      badgeText,
+                      style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: badgeColor),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildAiEngineStatusCard(bool isGoogleAi, String devModel) {
+    final activeTitle = isGoogleAi
+        ? 'Google AI Studio (${UserAiPreferencesService.geminiModel})'
+        : 'هوش مصنوعی پیش‌فرض ($devModel)';
+    final activeDesc = isGoogleAi
+        ? 'سهمیه کلید شخصی شما در گوگل فعال است'
+        : 'رایگان، بدون نیاز به تنظیمات (سرور توسعه‌دهنده)';
+    final cardColor = isGoogleAi ? const Color(0xFF1565C0) : const Color(0xFFFF7043);
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 18),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: cardColor.withValues(alpha: 0.3)),
+        boxShadow: [
+          BoxShadow(
+            color: cardColor.withValues(alpha: 0.05),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: cardColor.withValues(alpha: 0.1),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Icon(
+              isGoogleAi ? Icons.auto_awesome_rounded : Icons.cloud_done_rounded,
+              color: cardColor,
+              size: 22,
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    const Text(
+                      'موتور هوش مصنوعی:',
+                      style: TextStyle(fontSize: 11, color: Color(0xFF64748B)),
+                    ),
+                    const SizedBox(width: 6),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
+                      decoration: BoxDecoration(
+                        color: cardColor.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Text(
+                        isGoogleAi ? 'کلید شخصی جمنای' : 'سرور توسعه‌دهنده',
+                        style: TextStyle(fontSize: 9.5, fontWeight: FontWeight.bold, color: cardColor),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  activeTitle,
+                  style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w800, color: Color(0xFF1E293B)),
+                ),
+                Text(
+                  activeDesc,
+                  style: TextStyle(fontSize: 10.5, color: Colors.grey.shade600),
+                ),
+              ],
+            ),
+          ),
+          OutlinedButton.icon(
+            onPressed: _showAiSettingsBottomSheet,
+            icon: const Icon(Icons.tune_rounded, size: 14),
+            label: const Text('تنظیمات کلید', style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold)),
+            style: OutlinedButton.styleFrom(
+              foregroundColor: cardColor,
+              side: BorderSide(color: cardColor.withValues(alpha: 0.4)),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              minimumSize: Size.zero,
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildRenderedImageWidget({required BoxFit fit}) {
     if (_selectedImageBytes != null) {
       return Image.memory(
         _selectedImageBytes!,
         fit: fit,
       );
-    } else if (_selectedImagePath.isNotEmpty && !_selectedImagePath.startsWith('assets/')) {
-      final file = File(_selectedImagePath);
-      if (file.existsSync()) {
-        return Image.file(
-          file,
-          fit: fit,
-        );
-      }
+    } else if (_selectedImagePath.startsWith('http://') ||
+        _selectedImagePath.startsWith('https://') ||
+        _selectedImagePath.startsWith('blob:')) {
+      return Image.network(
+        _selectedImagePath,
+        fit: fit,
+        errorBuilder: (ctx, err, stack) => Container(
+          color: const Color(0xFFF1F5F9),
+          child: const Center(
+            child: Icon(Icons.broken_image_rounded, size: 48, color: Colors.grey),
+          ),
+        ),
+      );
+    } else if (!kIsWeb && _selectedImagePath.isNotEmpty && !_selectedImagePath.startsWith('assets/')) {
+      try {
+        final file = File(_selectedImagePath);
+        if (file.existsSync()) {
+          return Image.file(
+            file,
+            fit: fit,
+          );
+        }
+      } catch (_) {}
     }
     return Image.asset(
       _selectedImagePath.isNotEmpty ? _selectedImagePath : 'assets/templates/daily_planner.jpg',
@@ -332,6 +1231,8 @@ class _ProTemplateBuilderScreenState extends State<ProTemplateBuilderScreen> {
   @override
   Widget build(BuildContext context) {
     final aiConfig = AiConfigService.currentConfig;
+    final isGoogleAi = UserAiPreferencesService.activeProvider == AiProviderType.googleAiStudio;
+    final activeModelName = isGoogleAi ? UserAiPreferencesService.geminiModel : aiConfig.model;
 
     return Scaffold(
       backgroundColor: const Color(0xFFF8FAFC),
@@ -370,24 +1271,42 @@ class _ProTemplateBuilderScreenState extends State<ProTemplateBuilderScreen> {
                 icon: const Icon(Icons.file_upload_outlined, color: Color(0xFF2E7D32), size: 20),
                 onPressed: _exportAiLayoutToJson,
               ),
-            // AI Model Pill
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-              decoration: BoxDecoration(
-                color: const Color(0xFFFFF1EB),
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: const Color(0xFFFFCCBC)),
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Icon(Icons.cloud_done_rounded, size: 12, color: Color(0xFFE65100)),
-                  const SizedBox(width: 4),
-                  Text(
-                    aiConfig.model,
-                    style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFFBF360C)),
-                  ),
-                ],
+            // AI Model Pill & Settings Trigger
+            InkWell(
+              onTap: _showAiSettingsBottomSheet,
+              borderRadius: BorderRadius.circular(12),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+                decoration: BoxDecoration(
+                  color: isGoogleAi ? const Color(0xFFEFF6FF) : const Color(0xFFFFF1EB),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: isGoogleAi ? const Color(0xFFBFDBFE) : const Color(0xFFFFCCBC)),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      isGoogleAi ? Icons.auto_awesome_rounded : Icons.cloud_done_rounded,
+                      size: 13,
+                      color: isGoogleAi ? const Color(0xFF1D4ED8) : const Color(0xFFE65100),
+                    ),
+                    const SizedBox(width: 4),
+                    Text(
+                      activeModelName,
+                      style: TextStyle(
+                        fontSize: 10.5,
+                        fontWeight: FontWeight.bold,
+                        color: isGoogleAi ? const Color(0xFF1E40AF) : const Color(0xFFBF360C),
+                      ),
+                    ),
+                    const SizedBox(width: 3),
+                    Icon(
+                      Icons.arrow_drop_down_rounded,
+                      size: 14,
+                      color: isGoogleAi ? const Color(0xFF1D4ED8) : const Color(0xFFE65100),
+                    ),
+                  ],
+                ),
               ),
             ),
           ],
@@ -529,7 +1448,13 @@ class _ProTemplateBuilderScreenState extends State<ProTemplateBuilderScreen> {
               ],
             ),
           ),
-          const SizedBox(height: 20),
+          const SizedBox(height: 14),
+
+          // AI Engine Status & Personal Key Card
+          _buildAiEngineStatusCard(
+            UserAiPreferencesService.activeProvider == AiProviderType.googleAiStudio,
+            AiConfigService.currentConfig.model,
+          ),
 
           // Upload Card / Action (Fully Functional File Picker)
           GestureDetector(
@@ -772,7 +1697,14 @@ class _ProTemplateBuilderScreenState extends State<ProTemplateBuilderScreen> {
                 const SizedBox(width: 10),
                 Expanded(
                   child: Text(
-                    'هوش مصنوعی ${_analysisResult?.detectedBoxes.length ?? 0} باکس متن را متناسب با خطوط تصویر قرار داد.',
+                    () {
+                      final boxes = _analysisResult?.detectedBoxes.length ?? 0;
+                      final checks = _analysisResult?.checkpoints.length ?? 0;
+                      if (checks > 0) {
+                        return 'هوش مصنوعی $boxes باکس متن و $checks نقطه تیک هوشمند شناسایی کرد.';
+                      }
+                      return 'هوش مصنوعی $boxes باکس متن را متناسب با خطوط تصویر قرار داد.';
+                    }(),
                     style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12.5, color: Color(0xFF1B5E20)),
                   ),
                 ),
@@ -786,7 +1718,7 @@ class _ProTemplateBuilderScreenState extends State<ProTemplateBuilderScreen> {
             child: ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: 420),
               child: AspectRatio(
-                aspectRatio: 2 / 3,
+                aspectRatio: _analysisResult?.aspectRatio ?? _detectedImageAspectRatio,
                 child: Container(
                   decoration: BoxDecoration(
                     borderRadius: BorderRadius.circular(16),
@@ -954,6 +1886,27 @@ class _ProTemplateBuilderScreenState extends State<ProTemplateBuilderScreen> {
                                         ),
                                       ),
                                     ),
+                                  ),
+                                );
+                              }),
+
+                            // AI Detected Checkpoints Preview Layer
+                            if (_analysisResult != null)
+                              ..._analysisResult!.checkpoints.map((chk) {
+                                final left = chk.normalizedX * constraints.maxWidth;
+                                final top = chk.normalizedY * constraints.maxHeight;
+                                final w = (chk.normalizedWidth * constraints.maxWidth).clamp(24.0, 50.0);
+                                final h = (chk.normalizedHeight * constraints.maxHeight).clamp(24.0, 50.0);
+
+                                return Positioned(
+                                  left: left,
+                                  top: top,
+                                  width: w,
+                                  height: h,
+                                  child: InteractiveCheckBoxWidget(
+                                    key: ValueKey(chk.id),
+                                    item: chk,
+                                    isBuilderPreview: true,
                                   ),
                                 );
                               }),

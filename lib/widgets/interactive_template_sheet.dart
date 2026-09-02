@@ -1,19 +1,26 @@
+import 'dart:convert';
 import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import '../models/template_model.dart';
 import '../models/page_style_model.dart';
 import '../models/text_box_model.dart';
 import '../models/sticker_model.dart';
+import '../models/check_item_model.dart';
+import '../models/drawing_stroke_model.dart';
 import 'bounded_writing_zone.dart';
 import 'draggable_sticker.dart';
 import 'paper_pattern_painter.dart';
 import 'natural_page_note_editor.dart';
+import 'interactive_check_box_widget.dart';
+import 'drawing_canvas_widget.dart';
 
 class InteractiveTemplateSheet extends StatelessWidget {
   final JournalTemplate? template;
   final PageStyleConfig? pageStyle;
   final List<TextBoxItem> textBoxes;
   final List<StickerItem> stickers;
+  final List<InteractiveCheckItem> checkItems;
   final String? selectedTextBoxId;
   final String? selectedStickerId;
   final Function(String id) onSelectTextBox;
@@ -28,6 +35,7 @@ class InteractiveTemplateSheet extends StatelessWidget {
   final Function(String id, double newScale) onStickerScaleChanged;
   final Function(String id) onDeleteSticker;
 
+  final Function(String id)? onToggleCheckItem;
   final Function(Offset tapPosition) onCanvasTap;
 
   // Natural Note-taking parameters (when pageStyle != null)
@@ -43,12 +51,27 @@ class InteractiveTemplateSheet extends StatelessWidget {
   final bool isItalic;
   final Color? highlightColor;
 
+  // Freehand Drawing parameters
+  final List<DrawingStroke> drawingStrokes;
+  final DrawingStroke? currentStroke;
+  final bool isDrawingMode;
+  final Function(Offset localPos)? onDrawingStart;
+  final Function(Offset localPos)? onDrawingUpdate;
+  final VoidCallback? onDrawingEnd;
+
   const InteractiveTemplateSheet({
     super.key,
     this.template,
     this.pageStyle,
     required this.textBoxes,
     required this.stickers,
+    this.checkItems = const [],
+    this.drawingStrokes = const [],
+    this.currentStroke,
+    this.isDrawingMode = false,
+    this.onDrawingStart,
+    this.onDrawingUpdate,
+    this.onDrawingEnd,
     required this.selectedTextBoxId,
     required this.selectedStickerId,
     required this.onSelectTextBox,
@@ -61,6 +84,7 @@ class InteractiveTemplateSheet extends StatelessWidget {
     required this.onStickerPositionChanged,
     required this.onStickerScaleChanged,
     required this.onDeleteSticker,
+    this.onToggleCheckItem,
     required this.onCanvasTap,
     this.noteTitleController,
     this.noteBodyController,
@@ -107,21 +131,48 @@ class InteractiveTemplateSheet extends StatelessWidget {
 
     if (template?.imageAsset != null && template!.imageAsset!.isNotEmpty) {
       final path = template!.imageAsset!;
-      if (!path.startsWith('assets/')) {
-        final file = File(path);
-        if (file.existsSync()) {
-          return Image.file(
-            file,
+      if (path.startsWith('data:image') || path.startsWith('data:')) {
+        try {
+          final commaIdx = path.indexOf(',');
+          final b64 = commaIdx != -1 ? path.substring(commaIdx + 1) : path;
+          return Image.memory(
+            base64Decode(b64),
             fit: BoxFit.contain,
             errorBuilder: (ctx, err, stack) => _buildFallbackSheet(),
           );
-        }
+        } catch (_) {}
       }
-      return Image.asset(
-        path,
-        fit: BoxFit.contain,
-        errorBuilder: (ctx, err, stack) => _buildFallbackSheet(),
-      );
+
+      if (path.startsWith('http://') || path.startsWith('https://') || path.startsWith('blob:')) {
+        return Image.network(
+          path,
+          fit: BoxFit.contain,
+          errorBuilder: (ctx, err, stack) => _buildFallbackSheet(),
+        );
+      }
+
+      if (path.startsWith('assets/')) {
+        return Image.asset(
+          path,
+          fit: BoxFit.contain,
+          errorBuilder: (ctx, err, stack) => _buildFallbackSheet(),
+        );
+      }
+
+      if (!kIsWeb) {
+        try {
+          final file = File(path);
+          if (file.existsSync()) {
+            return Image.file(
+              file,
+              fit: BoxFit.contain,
+              errorBuilder: (ctx, err, stack) => _buildFallbackSheet(),
+            );
+          }
+        } catch (_) {}
+      }
+
+      return _buildFallbackSheet();
     }
 
     return _buildFallbackSheet();
@@ -149,57 +200,115 @@ class InteractiveTemplateSheet extends StatelessWidget {
               ),
             ],
           ),
-          child: Stack(
-            clipBehavior: Clip.none,
-            fit: StackFit.expand,
-            children: [
-              // Background Layer: Natural Note Paper OR Image Template
-              ClipRRect(
-                borderRadius: BorderRadius.circular(12),
-                child: GestureDetector(
-                  behavior: HitTestBehavior.opaque,
-                  onTapUp: (details) {
-                    onCanvasTap(details.localPosition);
-                  },
-                  child: _buildBackgroundContent(),
-                ),
-              ),
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              return Stack(
+                clipBehavior: Clip.none,
+                fit: StackFit.expand,
+                children: [
+                  // Background Layer: Natural Note Paper OR Image Template
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(12),
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTapUp: (details) {
+                        onCanvasTap(details.localPosition);
+                      },
+                      child: _buildBackgroundContent(),
+                    ),
+                  ),
 
-            // Dynamic Stickers Layer
-            ...stickers.map((stk) {
-              return DraggableStickerWidget(
-                key: ValueKey(stk.id),
-                item: stk,
-                isSelected: stk.id == selectedStickerId,
-                onTap: () => onSelectSticker(stk.id),
-                onPositionChanged: (newPos) => onStickerPositionChanged(stk.id, newPos),
-                onScaleChanged: (newScale) => onStickerScaleChanged(stk.id, newScale),
-                onDelete: () => onDeleteSticker(stk.id),
+                  // Freehand Drawing Canvas Layer
+                  Positioned.fill(
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(12),
+                      child: DrawingCanvasWidget(
+                        strokes: drawingStrokes,
+                        currentStroke: currentStroke,
+                        isDrawingMode: isDrawingMode,
+                        onPanStart: onDrawingStart,
+                        onPanUpdate: onDrawingUpdate,
+                        onPanEnd: onDrawingEnd,
+                      ),
+                    ),
+                  ),
+
+                  // Dynamic Stickers Layer
+                  ...stickers.map((stk) {
+                    return DraggableStickerWidget(
+                      key: ValueKey(stk.id),
+                      item: stk,
+                      isSelected: stk.id == selectedStickerId,
+                      onTap: () => onSelectSticker(stk.id),
+                      onPositionChanged: (newPos) => onStickerPositionChanged(stk.id, newPos),
+                      onScaleChanged: (newScale) => onStickerScaleChanged(stk.id, newScale),
+                      onDelete: () => onDeleteSticker(stk.id),
+                    );
+                  }),
+
+                  // Structured Bounded Writing Zones Layer (Seamless & subtle dashed blue border on focus)
+                  if (pageStyle == null)
+                    ...textBoxes.map((item) {
+                      final effectiveItem = (item.normalizedX != null &&
+                              item.normalizedY != null &&
+                              item.normalizedWidth != null &&
+                              item.normalizedHeight != null)
+                          ? item.copyWith(
+                              position: Offset(
+                                item.normalizedX! * constraints.maxWidth,
+                                item.normalizedY! * constraints.maxHeight,
+                              ),
+                              width: (item.normalizedWidth! * constraints.maxWidth).clamp(40.0, constraints.maxWidth),
+                              height: (item.normalizedHeight! * constraints.maxHeight).clamp(24.0, constraints.maxHeight),
+                            )
+                          : item;
+
+                      return BoundedWritingZoneWidget(
+                        key: ValueKey(item.id),
+                        item: effectiveItem,
+                        isSelected: item.id == selectedTextBoxId,
+                        onTap: () => onSelectTextBox(item.id),
+                        onTextChanged: (newText) => onTextChanged(item.id, newText),
+                        onAutoAdvance: () {
+                          if (onAutoAdvance != null) {
+                            onAutoAdvance!(item.id);
+                          }
+                        },
+                      );
+                    }),
+
+                  // Interactive Checkpoints Layer (Checkboxes, habit dots, water trackers)
+                  if (pageStyle == null)
+                    ...checkItems.map((chk) {
+                      final left = chk.normalizedX * constraints.maxWidth;
+                      final top = chk.normalizedY * constraints.maxHeight;
+                      final w = (chk.normalizedWidth * constraints.maxWidth).clamp(24.0, 60.0);
+                      final h = (chk.normalizedHeight * constraints.maxHeight).clamp(24.0, 60.0);
+
+                      return Positioned(
+                        left: left,
+                        top: top,
+                        width: w,
+                        height: h,
+                        child: InteractiveCheckBoxWidget(
+                          key: ValueKey(chk.id),
+                          item: chk,
+                          onToggle: () {
+                            if (onToggleCheckItem != null) {
+                              onToggleCheckItem!(chk.id);
+                            }
+                          },
+                        ),
+                      );
+                    }),
+                ],
               );
-            }),
-
-            // Structured Bounded Writing Zones Layer (Seamless & subtle dashed blue border on focus)
-            if (pageStyle == null)
-              ...textBoxes.map((item) {
-                return BoundedWritingZoneWidget(
-                  key: ValueKey(item.id),
-                  item: item,
-                  isSelected: item.id == selectedTextBoxId,
-                  onTap: () => onSelectTextBox(item.id),
-                  onTextChanged: (newText) => onTextChanged(item.id, newText),
-                  onAutoAdvance: () {
-                    if (onAutoAdvance != null) {
-                      onAutoAdvance!(item.id);
-                    }
-                  },
-                );
-              }),
-          ],
+            },
+          ),
         ),
       ),
-    ),
-  );
-}
+    );
+  }
 
   Widget _buildFallbackSheet() {
     return Container(

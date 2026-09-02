@@ -1,8 +1,11 @@
 import 'dart:convert';
 import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../models/notebook_model.dart';
 import '../models/template_model.dart';
 import '../services/notebook_storage_service.dart';
@@ -243,12 +246,12 @@ class _NotebookDetailScreenState extends State<NotebookDetailScreen> {
 
   Future<void> _exportNotebookToJson() async {
     try {
-      final file = await NotebookExportService.instance.exportNotebookToJson(_notebook);
+      final res = await NotebookExportService.instance.exportNotebookToJson(_notebook);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('✨ فایل لایه‌باز JSON دفترچه ذخیره شد:\n${file.path}'),
-            backgroundColor: const Color(0xFF2E7D32),
+            content: Text(res.userMessage),
+            backgroundColor: res.isSuccess ? const Color(0xFF2E7D32) : Colors.red,
             behavior: SnackBarBehavior.floating,
             duration: const Duration(seconds: 4),
           ),
@@ -277,6 +280,16 @@ class _NotebookDetailScreenState extends State<NotebookDetailScreen> {
         final importRes = NotebookExportService.instance.importPackageFromJson(fileStr);
 
         if (importRes.isSuccess) {
+          if (importRes.template != null) {
+            JournalTemplate.registerTemplate(importRes.template!);
+            await NotebookStorageService.instance.saveOrUpdateCustomTemplate(importRes.template!);
+          }
+          if (importRes.templates != null && importRes.templates!.isNotEmpty) {
+            for (final t in importRes.templates!) {
+              JournalTemplate.registerTemplate(t);
+              await NotebookStorageService.instance.saveOrUpdateCustomTemplate(t);
+            }
+          }
           setState(() {
             if (importRes.page != null) {
               _notebook.pages.add(importRes.page!);
@@ -334,6 +347,152 @@ class _NotebookDetailScreenState extends State<NotebookDetailScreen> {
         ],
       ),
     );
+  }
+
+  void _duplicateNotebook() {
+    final duplicated = NotebookModel(
+      id: 'nb_${DateTime.now().millisecondsSinceEpoch}',
+      title: '${_notebook.title} (کپی)',
+      coverColor: _notebook.coverColor,
+      coverImagePath: _notebook.coverImagePath,
+      folderName: _notebook.folderName,
+      pages: _notebook.pages
+          .map((p) => p.copyWith(id: 'p_${DateTime.now().millisecondsSinceEpoch}_${p.id}'))
+          .toList(),
+      isFavorite: _notebook.isFavorite,
+    );
+    NotebookStorageService.instance.saveOrUpdateNotebook(duplicated);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('نسخه کپی از «${_notebook.title}» ساخته شد.'),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
+  Future<void> _saveNotebookPdf() async {
+    try {
+      final res = await NotebookExportService.instance.exportHtmlPrintableDocument(_notebook);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(res.userMessage),
+            backgroundColor: res.isSuccess ? const Color(0xFF2E7D32) : Colors.red.shade700,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('خطا در صدور سند: $e')),
+        );
+      }
+    }
+  }
+
+  Future<void> _shareNotebook() async {
+    final text = NotebookExportService.instance.formatNotebookAsText(_notebook);
+    await Clipboard.setData(ClipboardData(text: text));
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('متن کامل و خلاصه دفترچه «${_notebook.title}» در حافظه موقت (Clipboard) کپی شد (${text.length} کاراکتر).'),
+          behavior: SnackBarBehavior.floating,
+          backgroundColor: const Color(0xFF2E7D32),
+        ),
+      );
+    }
+  }
+
+  Future<void> _setNotebookToWidget() async {
+    NotebookExportService.instance.setActiveWidgetNotebook(_notebook.id);
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('active_widget_notebook_id', _notebook.id);
+    } catch (_) {}
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('دفترچه «${_notebook.title}» به عنوان ویجت فعال انتخاب شد.'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
+
+  void _addNotebookToFolder() {
+    final folderCtrl = TextEditingController(text: _notebook.folderName ?? '');
+    final presetFolders = ['شخصی', 'کاری', 'مطالعه', 'برنامه‌ریزی', 'ایده‌ها'];
+
+    showDialog(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          title: const Text('پوشه‌بندی دفترچه', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              TextField(
+                controller: folderCtrl,
+                decoration: const InputDecoration(
+                  labelText: 'نام پوشه',
+                  hintText: 'مثال: کاری، شخصی',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 12),
+              const Text('پوشه‌های پیشنهادی:', style: TextStyle(fontSize: 12, color: Colors.grey)),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 6,
+                children: presetFolders.map((f) {
+                  return ActionChip(
+                    label: Text(f, style: const TextStyle(fontSize: 11)),
+                    onPressed: () {
+                      setDialogState(() {
+                        folderCtrl.text = f;
+                      });
+                    },
+                  );
+                }).toList(),
+              ),
+            ],
+          ),
+          actions: [
+            if (_notebook.folderName != null && _notebook.folderName!.isNotEmpty)
+              TextButton(
+                onPressed: () {
+                  setState(() => _notebook.folderName = null);
+                  _saveNotebook();
+                  Navigator.pop(context);
+                },
+                child: const Text('حذف از پوشه', style: TextStyle(color: Colors.red)),
+              ),
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('انصراف'),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                setState(() {
+                  _notebook.folderName = folderCtrl.text.trim().isEmpty ? null : folderCtrl.text.trim();
+                });
+                _saveNotebook();
+                Navigator.pop(context);
+              },
+              child: const Text('تایید'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _saveNotebookToGallery() async {
+    _saveNotebookPdf();
   }
 
   @override
@@ -450,6 +609,14 @@ class _NotebookDetailScreenState extends State<NotebookDetailScreen> {
                 PlannerContextMenu.show(
                   context,
                   onEdit: _editNotebookCover,
+                  onDuplicate: _duplicateNotebook,
+                  onSaveToGallery: _saveNotebookToGallery,
+                  onSavePdf: _saveNotebookPdf,
+                  onPrint: _saveNotebookPdf,
+                  onShare: _shareNotebook,
+                  onExport: _exportNotebookToJson,
+                  onSetToWidget: _setNotebookToWidget,
+                  onAddToFolder: _addNotebookToFolder,
                   onDelete: _deleteNotebook,
                 );
               },
@@ -704,14 +871,87 @@ class _NotebookDetailScreenState extends State<NotebookDetailScreen> {
   }
 
   Widget _buildTemplateThumbnail(JournalTemplate tmpl) {
-    if (tmpl.imageAsset != null && tmpl.imageAsset!.isNotEmpty) {
+    if (tmpl.imageBytes != null && tmpl.imageBytes!.isNotEmpty) {
       return Center(
         child: AspectRatio(
           aspectRatio: tmpl.aspectRatio,
-          child: Image.asset(tmpl.imageAsset!, fit: BoxFit.contain),
+          child: Image.memory(
+            tmpl.imageBytes!,
+            fit: BoxFit.contain,
+            errorBuilder: (_, __, ___) => _buildFallbackThumbnail(tmpl),
+          ),
         ),
       );
     }
+
+    if (tmpl.imageAsset != null && tmpl.imageAsset!.isNotEmpty) {
+      final path = tmpl.imageAsset!;
+      if (path.startsWith('data:image') || path.startsWith('data:')) {
+        try {
+          final commaIdx = path.indexOf(',');
+          final b64 = commaIdx != -1 ? path.substring(commaIdx + 1) : path;
+          return Center(
+            child: AspectRatio(
+              aspectRatio: tmpl.aspectRatio,
+              child: Image.memory(
+                base64Decode(b64),
+                fit: BoxFit.contain,
+                errorBuilder: (_, __, ___) => _buildFallbackThumbnail(tmpl),
+              ),
+            ),
+          );
+        } catch (_) {}
+      }
+
+      if (path.startsWith('http://') || path.startsWith('https://') || path.startsWith('blob:')) {
+        return Center(
+          child: AspectRatio(
+            aspectRatio: tmpl.aspectRatio,
+            child: Image.network(
+              path,
+              fit: BoxFit.contain,
+              errorBuilder: (_, __, ___) => _buildFallbackThumbnail(tmpl),
+            ),
+          ),
+        );
+      }
+
+      if (path.startsWith('assets/')) {
+        return Center(
+          child: AspectRatio(
+            aspectRatio: tmpl.aspectRatio,
+            child: Image.asset(
+              path,
+              fit: BoxFit.contain,
+              errorBuilder: (_, __, ___) => _buildFallbackThumbnail(tmpl),
+            ),
+          ),
+        );
+      }
+
+      if (!kIsWeb) {
+        try {
+          final file = File(path);
+          if (file.existsSync()) {
+            return Center(
+              child: AspectRatio(
+                aspectRatio: tmpl.aspectRatio,
+                child: Image.file(
+                  file,
+                  fit: BoxFit.contain,
+                  errorBuilder: (_, __, ___) => _buildFallbackThumbnail(tmpl),
+                ),
+              ),
+            );
+          }
+        } catch (_) {}
+      }
+    }
+
+    return _buildFallbackThumbnail(tmpl);
+  }
+
+  Widget _buildFallbackThumbnail(JournalTemplate tmpl) {
     return Container(
       color: tmpl.cardBackground,
       padding: const EdgeInsets.all(12),

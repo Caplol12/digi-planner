@@ -1,3 +1,6 @@
+import 'dart:convert';
+import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import '../models/template_model.dart';
 import '../theme/app_theme.dart';
@@ -14,10 +17,64 @@ class TemplateCard extends StatelessWidget {
     required this.onFavoriteToggle,
   });
 
+  Widget _buildTemplateImage() {
+    if (template.imageBytes != null && template.imageBytes!.isNotEmpty) {
+      return Image.memory(
+        template.imageBytes!,
+        fit: BoxFit.contain,
+        errorBuilder: (ctx, err, stack) => _buildFallbackSheet(),
+      );
+    }
+
+    if (template.imageAsset != null && template.imageAsset!.isNotEmpty) {
+      final path = template.imageAsset!;
+      if (path.startsWith('data:image') || path.startsWith('data:')) {
+        try {
+          final commaIdx = path.indexOf(',');
+          final b64 = commaIdx != -1 ? path.substring(commaIdx + 1) : path;
+          return Image.memory(
+            base64Decode(b64),
+            fit: BoxFit.contain,
+            errorBuilder: (ctx, err, stack) => _buildFallbackSheet(),
+          );
+        } catch (_) {}
+      }
+
+      if (path.startsWith('http://') || path.startsWith('https://') || path.startsWith('blob:')) {
+        return Image.network(
+          path,
+          fit: BoxFit.contain,
+          errorBuilder: (ctx, err, stack) => _buildFallbackSheet(),
+        );
+      }
+
+      if (path.startsWith('assets/')) {
+        return Image.asset(
+          path,
+          fit: BoxFit.contain,
+          errorBuilder: (ctx, err, stack) => _buildFallbackSheet(),
+        );
+      }
+
+      if (!kIsWeb) {
+        try {
+          final file = File(path);
+          if (file.existsSync()) {
+            return Image.file(
+              file,
+              fit: BoxFit.contain,
+              errorBuilder: (ctx, err, stack) => _buildFallbackSheet(),
+            );
+          }
+        } catch (_) {}
+      }
+    }
+
+    return _buildFallbackSheet();
+  }
+
   @override
   Widget build(BuildContext context) {
-    final hasImage = template.imageAsset != null;
-
     return GestureDetector(
       onTap: onTap,
       child: Container(
@@ -51,13 +108,7 @@ class TemplateCard extends StatelessWidget {
                     Center(
                       child: ClipRRect(
                         borderRadius: BorderRadius.circular(12),
-                        child: hasImage
-                            ? Image.asset(
-                                template.imageAsset!,
-                                fit: BoxFit.contain,
-                                errorBuilder: (ctx, err, stack) => _buildFallbackSheet(),
-                              )
-                            : _buildFallbackSheet(),
+                        child: _buildTemplateImage(),
                       ),
                     ),
 

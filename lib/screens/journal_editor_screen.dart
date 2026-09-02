@@ -8,6 +8,7 @@ import '../models/journal_model.dart';
 import '../models/notebook_model.dart';
 import '../models/text_box_model.dart';
 import '../models/sticker_model.dart';
+import '../models/check_item_model.dart';
 import '../services/notebook_export_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/interactive_template_sheet.dart';
@@ -38,6 +39,7 @@ class _JournalEditorScreenState extends State<JournalEditorScreen> {
   PageStyleConfig? _currentPageStyle;
   final List<TextBoxItem> _textBoxes = [];
   final List<StickerItem> _stickers = [];
+  final List<InteractiveCheckItem> _checkItems = [];
   String? _selectedTextBoxId;
   String? _selectedStickerId;
 
@@ -54,6 +56,8 @@ class _JournalEditorScreenState extends State<JournalEditorScreen> {
   final bool _isItalic = false;
   TextAlign _textAlign = TextAlign.right;
   Color? _currentHighlightColor;
+
+  bool get isPageStyleMode => _currentPageStyle != null;
 
   @override
   void initState() {
@@ -88,6 +92,13 @@ class _JournalEditorScreenState extends State<JournalEditorScreen> {
         if (decoded.containsKey('stickers')) {
           for (final item in decoded['stickers'] as List) {
             _stickers.add(StickerItem.fromJson(item as Map<String, dynamic>));
+          }
+        }
+        if (decoded.containsKey('checkItems')) {
+          for (final item in decoded['checkItems'] as List) {
+            try {
+              _checkItems.add(InteractiveCheckItem.fromJson(item as Map<String, dynamic>));
+            } catch (_) {}
           }
         }
       } catch (_) {
@@ -151,17 +162,25 @@ class _JournalEditorScreenState extends State<JournalEditorScreen> {
         b.isSelected = false;
       }
 
+      final pos = position ?? Offset(60, 100 + (_textBoxes.length * 35.0) % 300);
+      final double sheetW = isPageStyleMode ? 580.0 : 420.0;
+      final double sheetH = sheetW / (_currentTemplate?.aspectRatio ?? (_currentPageStyle?.effectiveAspectRatio ?? (848 / 1264)));
+
       final newBox = TextBoxItem(
         id: 'tb_${DateTime.now().millisecondsSinceEpoch}_${_textBoxes.length}',
         text: '',
         hintText: 'متن خود را بنویسید...',
-        position: position ?? Offset(60, 100 + (_textBoxes.length * 35.0) % 300),
+        position: pos,
         width: 180,
         height: 36,
         fontSize: _currentFontSize,
         fontName: _currentFontName,
         inkColor: _currentInkColor,
         isSelected: true,
+        normalizedX: (pos.dx / sheetW).clamp(0.0, 1.0),
+        normalizedY: (pos.dy / sheetH).clamp(0.0, 1.0),
+        normalizedWidth: (180.0 / sheetW).clamp(0.05, 1.0),
+        normalizedHeight: (36.0 / sheetH).clamp(0.02, 1.0),
       );
 
       _textBoxes.add(newBox);
@@ -199,6 +218,15 @@ class _JournalEditorScreenState extends State<JournalEditorScreen> {
       } else if (_selectedStickerId != null) {
         _stickers.removeWhere((s) => s.id == _selectedStickerId);
         _selectedStickerId = _stickers.isNotEmpty ? _stickers.last.id : null;
+      }
+    });
+  }
+
+  void _toggleCheckItem(String id) {
+    setState(() {
+      final idx = _checkItems.indexWhere((c) => c.id == id);
+      if (idx != -1) {
+        _checkItems[idx] = _checkItems[idx].copyWith(isChecked: !_checkItems[idx].isChecked);
       }
     });
   }
@@ -421,8 +449,10 @@ class _JournalEditorScreenState extends State<JournalEditorScreen> {
         'cueText': _cueController.text,
         'summaryText': _summaryController.text,
       },
+      if (_currentTemplate != null) 'templateId': _currentTemplate!.id,
       'textBoxes': _textBoxes.map((b) => b.toJson()).toList(),
       'stickers': _stickers.map((s) => s.toJson()).toList(),
+      'checkItems': _checkItems.map((c) => c.toJson()).toList(),
     });
 
     final defaultTitle = _currentPageStyle != null
@@ -498,14 +528,15 @@ class _JournalEditorScreenState extends State<JournalEditorScreen> {
         summaryText: _summaryController.text,
         textBoxes: _textBoxes,
         stickers: _stickers,
+        checkItems: _checkItems,
       );
 
-      final file = await NotebookExportService.instance.exportPageToJson(page, associatedTemplate: _currentTemplate);
+      final res = await NotebookExportService.instance.exportPageToJson(page, associatedTemplate: _currentTemplate);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('✨ خروجی لایه‌باز JSON برگه در مسیر زیر ذخیره شد:\n${file.path}'),
-            backgroundColor: const Color(0xFF2E7D32),
+            content: Text(res.userMessage),
+            backgroundColor: res.isSuccess ? const Color(0xFF2E7D32) : Colors.red.shade700,
             behavior: SnackBarBehavior.floating,
             duration: const Duration(seconds: 4),
           ),
@@ -534,7 +565,15 @@ class _JournalEditorScreenState extends State<JournalEditorScreen> {
         final importRes = NotebookExportService.instance.importPackageFromJson(fileStr);
 
         if (importRes.isSuccess && (importRes.page != null || importRes.template != null)) {
+          if (importRes.template != null) {
+            JournalTemplate.registerTemplate(importRes.template!);
+            NotebookStorageService.instance.saveOrUpdateCustomTemplate(importRes.template!);
+          }
           setState(() {
+            if (importRes.template != null) {
+              _currentTemplate = importRes.template;
+              _currentPageStyle = null; // Clear pageStyle so template and text boxes render properly
+            }
             if (importRes.page != null) {
               final p = importRes.page!;
               _noteTitleController.text = p.noteTitle;
@@ -545,9 +584,16 @@ class _JournalEditorScreenState extends State<JournalEditorScreen> {
               _textBoxes.addAll(p.textBoxes);
               _stickers.clear();
               _stickers.addAll(p.stickers);
-            }
-            if (importRes.template != null) {
-              _currentTemplate = importRes.template;
+              _checkItems.clear();
+              _checkItems.addAll(p.checkItems);
+
+              if (p.templateId != null && _currentTemplate == null) {
+                final found = JournalTemplate.findTemplateById(p.templateId);
+                if (found != null) {
+                  _currentTemplate = found;
+                  _currentPageStyle = null;
+                }
+              }
             }
           });
           if (mounted) {
@@ -684,8 +730,10 @@ class _JournalEditorScreenState extends State<JournalEditorScreen> {
                       highlightColor: _currentHighlightColor,
                       textBoxes: _textBoxes,
                       stickers: _stickers,
+                      checkItems: _checkItems,
                       selectedTextBoxId: _selectedTextBoxId,
                       selectedStickerId: _selectedStickerId,
+                      onToggleCheckItem: _toggleCheckItem,
                       onSelectTextBox: (id) {
                         setState(() {
                           _selectedTextBoxId = id;

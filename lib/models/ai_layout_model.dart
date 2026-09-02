@@ -1,5 +1,8 @@
+import 'dart:convert';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'text_box_model.dart';
+import 'check_item_model.dart';
 
 enum DetectedBoxType {
   singleLine, // Header, title, date
@@ -100,6 +103,10 @@ class DetectedBox {
       textAlign: textAlign,
       isBold: isBold,
       isSelected: false,
+      normalizedX: normalizedX,
+      normalizedY: normalizedY,
+      normalizedWidth: normalizedWidth,
+      normalizedHeight: normalizedHeight,
     );
   }
 
@@ -201,37 +208,54 @@ class DetectedBox {
 
 class AILayoutResult {
   final String imagePath;
+  final Uint8List? imageBytes;
   final double aspectRatio;
   final String title;
   final List<DetectedBox> detectedBoxes;
+  final List<InteractiveCheckItem> checkpoints;
   final String analysisEngine;
   final DateTime detectedAt;
 
   AILayoutResult({
     required this.imagePath,
+    this.imageBytes,
     this.aspectRatio = 2 / 3,
     required this.title,
     required this.detectedBoxes,
+    this.checkpoints = const [],
     this.analysisEngine = 'AI Vision Engine',
     DateTime? detectedAt,
   }) : detectedAt = detectedAt ?? DateTime.now();
 
   Map<String, dynamic> toJson() => {
         'imagePath': imagePath,
+        if (imageBytes != null) 'imageBytesBase64': base64Encode(imageBytes!),
         'aspectRatio': aspectRatio,
         'title': title,
         'detectedBoxes': detectedBoxes.map((b) => b.toJson()).toList(),
+        'checkpoints': checkpoints.map((c) => c.toJson()).toList(),
         'analysisEngine': analysisEngine,
         'detectedAt': detectedAt.toIso8601String(),
       };
 
   factory AILayoutResult.fromJson(Map<String, dynamic> json) {
     final boxesJson = json['detectedBoxes'] as List? ?? [];
+    final checkpointsJson = (json['checkpoints'] ?? json['checkItems'] ?? json['ticks']) as List? ?? [];
+
+    Uint8List? bytes;
+    if (json['imageBytesBase64'] != null && (json['imageBytesBase64'] as String).isNotEmpty) {
+      try {
+        bytes = base64Decode(json['imageBytesBase64'] as String);
+      } catch (_) {}
+    }
+
     return AILayoutResult(
       imagePath: json['imagePath'] as String? ?? '',
+      imageBytes: bytes,
       aspectRatio: (json['aspectRatio'] as num?)?.toDouble() ?? 2 / 3,
       title: json['title'] as String? ?? 'قالب هوشمند',
       detectedBoxes: boxesJson.map((b) => DetectedBox.fromJson(b as Map<String, dynamic>)).toList(),
+      checkpoints: checkpointsJson.map((c) => InteractiveCheckItem.fromJson(c as Map<String, dynamic>)).toList(),
       analysisEngine: json['analysisEngine'] as String? ?? 'AI Vision Engine',
       detectedAt: json['detectedAt'] != null ? DateTime.parse(json['detectedAt']) : DateTime.now(),
     );

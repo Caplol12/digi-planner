@@ -1,8 +1,11 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'page_style_model.dart';
 import 'template_model.dart';
 import 'text_box_model.dart';
 import 'sticker_model.dart';
+import 'check_item_model.dart';
+import 'drawing_stroke_model.dart';
 
 class NotebookPageModel {
   final String id;
@@ -15,6 +18,8 @@ class NotebookPageModel {
   String summaryText;
   List<TextBoxItem> textBoxes;
   List<StickerItem> stickers;
+  List<InteractiveCheckItem> checkItems;
+  List<DrawingStroke> drawingStrokes;
   DateTime? scheduledDate;
   DateTime createdAt;
   DateTime updatedAt;
@@ -30,22 +35,22 @@ class NotebookPageModel {
     this.summaryText = '',
     List<TextBoxItem>? textBoxes,
     List<StickerItem>? stickers,
+    List<InteractiveCheckItem>? checkItems,
+    List<DrawingStroke>? drawingStrokes,
     this.scheduledDate,
     DateTime? createdAt,
     DateTime? updatedAt,
   })  : pageStyle = pageStyle ?? PageStyleConfig(),
         textBoxes = textBoxes ?? [],
         stickers = stickers ?? [],
+        checkItems = checkItems ?? [],
+        drawingStrokes = drawingStrokes ?? [],
         createdAt = createdAt ?? DateTime.now(),
         updatedAt = updatedAt ?? DateTime.now();
 
   JournalTemplate? get template {
     if (templateId == null) return null;
-    try {
-      return JournalTemplate.sampleTemplates.firstWhere((t) => t.id == templateId);
-    } catch (_) {
-      return null;
-    }
+    return JournalTemplate.findTemplateById(templateId);
   }
 
   set template(JournalTemplate? tmpl) {
@@ -84,6 +89,8 @@ class NotebookPageModel {
     String? summaryText,
     List<TextBoxItem>? textBoxes,
     List<StickerItem>? stickers,
+    List<InteractiveCheckItem>? checkItems,
+    List<DrawingStroke>? drawingStrokes,
     DateTime? scheduledDate,
     DateTime? createdAt,
     DateTime? updatedAt,
@@ -99,6 +106,8 @@ class NotebookPageModel {
       summaryText: summaryText ?? this.summaryText,
       textBoxes: textBoxes ?? List.from(this.textBoxes),
       stickers: stickers ?? List.from(this.stickers),
+      checkItems: checkItems ?? List.from(this.checkItems),
+      drawingStrokes: drawingStrokes ?? List.from(this.drawingStrokes),
       scheduledDate: scheduledDate ?? this.scheduledDate,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? DateTime.now(),
@@ -116,6 +125,8 @@ class NotebookPageModel {
         'summaryText': summaryText,
         'textBoxes': textBoxes.map((e) => e.toJson()).toList(),
         'stickers': stickers.map((e) => e.toJson()).toList(),
+        'checkItems': checkItems.map((e) => e.toJson()).toList(),
+        'drawingStrokes': drawingStrokes.map((e) => e.toJson()).toList(),
         'scheduledDate': scheduledDate?.toIso8601String(),
         'createdAt': createdAt.toIso8601String(),
         'updatedAt': updatedAt.toIso8601String(),
@@ -140,6 +151,24 @@ class NotebookPageModel {
       }
     }
 
+    List<InteractiveCheckItem> loadedChecks = [];
+    if (json['checkItems'] != null && json['checkItems'] is List) {
+      for (final item in json['checkItems']) {
+        try {
+          loadedChecks.add(InteractiveCheckItem.fromJson(item as Map<String, dynamic>));
+        } catch (_) {}
+      }
+    }
+
+    List<DrawingStroke> loadedStrokes = [];
+    if (json['drawingStrokes'] != null && json['drawingStrokes'] is List) {
+      for (final item in json['drawingStrokes']) {
+        try {
+          loadedStrokes.add(DrawingStroke.fromJson(item as Map<String, dynamic>));
+        } catch (_) {}
+      }
+    }
+
     return NotebookPageModel(
       id: json['id'] as String? ?? 'p_${DateTime.now().millisecondsSinceEpoch}',
       title: json['title'] as String? ?? 'برگه یادداشت',
@@ -153,6 +182,8 @@ class NotebookPageModel {
       summaryText: json['summaryText'] as String? ?? '',
       textBoxes: loadedBoxes,
       stickers: loadedStickers,
+      checkItems: loadedChecks,
+      drawingStrokes: loadedStrokes,
       scheduledDate: json['scheduledDate'] != null
           ? DateTime.tryParse(json['scheduledDate'] as String)
           : null,
@@ -162,6 +193,102 @@ class NotebookPageModel {
       updatedAt: json['updatedAt'] != null
           ? DateTime.tryParse(json['updatedAt'] as String) ?? DateTime.now()
           : DateTime.now(),
+    );
+  }
+
+  factory NotebookPageModel.fromJournalContent({
+    required String id,
+    required String title,
+    required String content,
+    String? templateId,
+    PageStyleConfig? defaultPageStyle,
+  }) {
+    PageStyleConfig? pageStyle = defaultPageStyle;
+    String noteTitle = title;
+    String noteBody = '';
+    String cueText = '';
+    String summaryText = '';
+    List<TextBoxItem> textBoxes = [];
+    List<StickerItem> stickers = [];
+    List<InteractiveCheckItem> checkItems = [];
+    List<DrawingStroke> drawingStrokes = [];
+
+    if (content.trim().isNotEmpty) {
+      try {
+        final decoded = jsonDecode(content);
+        if (decoded is Map<String, dynamic>) {
+          if (decoded.containsKey('templateId') && (decoded['templateId'] as String?)?.isNotEmpty == true) {
+            templateId = decoded['templateId'] as String;
+          }
+          if (decoded.containsKey('pageStyle') && decoded['pageStyle'] != null) {
+            pageStyle = PageStyleConfig.fromJson(decoded['pageStyle'] as Map<String, dynamic>);
+          }
+          if (decoded.containsKey('noteTitle')) {
+            noteTitle = decoded['noteTitle'] as String? ?? title;
+          }
+          if (decoded.containsKey('noteBody')) {
+            noteBody = decoded['noteBody'] as String? ?? '';
+          }
+          if (decoded.containsKey('cueText')) {
+            cueText = decoded['cueText'] as String? ?? '';
+          }
+          if (decoded.containsKey('summaryText')) {
+            summaryText = decoded['summaryText'] as String? ?? '';
+          }
+          if (decoded.containsKey('textBoxes') && decoded['textBoxes'] is List) {
+            for (final item in decoded['textBoxes']) {
+              try {
+                textBoxes.add(TextBoxItem.fromJson(item as Map<String, dynamic>));
+              } catch (_) {}
+            }
+          }
+          if (decoded.containsKey('stickers') && decoded['stickers'] is List) {
+            for (final item in decoded['stickers']) {
+              try {
+                stickers.add(StickerItem.fromJson(item as Map<String, dynamic>));
+              } catch (_) {}
+            }
+          }
+          if (decoded.containsKey('checkItems') && decoded['checkItems'] is List) {
+            for (final item in decoded['checkItems']) {
+              try {
+                checkItems.add(InteractiveCheckItem.fromJson(item as Map<String, dynamic>));
+              } catch (_) {}
+            }
+          }
+          if (decoded.containsKey('drawingStrokes') && decoded['drawingStrokes'] is List) {
+            for (final item in decoded['drawingStrokes']) {
+              try {
+                drawingStrokes.add(DrawingStroke.fromJson(item as Map<String, dynamic>));
+              } catch (_) {}
+            }
+          }
+        } else if (decoded is List) {
+          for (final item in decoded) {
+            try {
+              textBoxes.add(TextBoxItem.fromJson(item as Map<String, dynamic>));
+            } catch (_) {}
+          }
+        }
+      } catch (_) {
+        // Plain text fallback
+        noteBody = content;
+      }
+    }
+
+    return NotebookPageModel(
+      id: id,
+      title: noteTitle.isNotEmpty ? noteTitle : title,
+      templateId: templateId,
+      pageStyle: pageStyle ?? PageStyleConfig(),
+      noteTitle: noteTitle,
+      noteBody: noteBody,
+      cueText: cueText,
+      summaryText: summaryText,
+      textBoxes: textBoxes,
+      stickers: stickers,
+      checkItems: checkItems,
+      drawingStrokes: drawingStrokes,
     );
   }
 }

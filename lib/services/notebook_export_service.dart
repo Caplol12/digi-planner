@@ -1,8 +1,10 @@
 import 'dart:convert';
-import 'dart:io';
+import 'dart:io' show Directory, File;
 import 'package:flutter/foundation.dart';
 import 'package:intl/intl.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:share_plus/share_plus.dart';
+import 'export_download_helper.dart';
 import '../models/notebook_model.dart';
 import '../models/template_model.dart';
 import '../models/ai_layout_model.dart';
@@ -43,6 +45,30 @@ class ImportResult {
   }
 }
 
+class ExportResult {
+  final bool isSuccess;
+  final String fileName;
+  final String? filePath;
+  final String userMessage;
+  final bool isShared;
+
+  ExportResult({
+    required this.isSuccess,
+    required this.fileName,
+    this.filePath,
+    required this.userMessage,
+    this.isShared = false,
+  });
+
+  factory ExportResult.error(String message) {
+    return ExportResult(
+      isSuccess: false,
+      fileName: '',
+      userMessage: message,
+    );
+  }
+}
+
 class NotebookExportService {
   static final NotebookExportService instance = NotebookExportService._();
   NotebookExportService._();
@@ -55,17 +81,74 @@ class NotebookExportService {
     _activeWidgetNotebookId = notebookId;
   }
 
-  /// Helper to get application documents directory for saving export JSON files
-  Future<File> _createExportFile(String prefix, String title) async {
-    final dir = await getApplicationDocumentsDirectory();
-    final safeTitle = title.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
-    final timestamp = DateTime.now().millisecondsSinceEpoch;
-    return File('${dir.path}/${prefix}_${safeTitle}_$timestamp.json');
+  /// Core cross-platform export: Web direct download, Mobile share sheet, Desktop local file
+  Future<ExportResult> exportDataSmart({
+    required String content,
+    required String fileName,
+    String mimeType = 'application/json',
+    String? shareSubject,
+  }) async {
+    try {
+      if (kIsWeb) {
+        final bytes = utf8.encode(content);
+        triggerWebDownload(bytes: bytes, fileName: fileName, mimeType: mimeType);
+        return ExportResult(
+          isSuccess: true,
+          fileName: fileName,
+          userMessage: 'فایل «$fileName» با موفقیت در مرورگر دانلود شد.',
+        );
+      }
+
+      // Mobile platforms: Android / iOS (Save temporary and trigger native Share Sheet)
+      if (defaultTargetPlatform == TargetPlatform.android || defaultTargetPlatform == TargetPlatform.iOS) {
+        final tempDir = await getTemporaryDirectory();
+        final file = File('${tempDir.path}/$fileName');
+        await file.writeAsString(content);
+
+        final xfile = XFile(file.path, mimeType: mimeType, name: fileName);
+        await SharePlus.instance.share(
+          ShareParams(
+            files: [xfile],
+            subject: shareSubject ?? fileName,
+            text: 'فایل خروجی PlanWiz: $fileName',
+          ),
+        );
+
+        return ExportResult(
+          isSuccess: true,
+          fileName: fileName,
+          filePath: file.path,
+          isShared: true,
+          userMessage: 'فایل «$fileName» آماده اشتراک‌گذاری یا ذخیره شد.',
+        );
+      }
+
+      // Desktop platforms: Windows, macOS, Linux
+      Directory? baseDir;
+      try {
+        baseDir = await getDownloadsDirectory();
+      } catch (_) {}
+      baseDir ??= await getApplicationDocumentsDirectory();
+
+      final file = File('${baseDir.path}/$fileName');
+      await file.writeAsString(content);
+
+      return ExportResult(
+        isSuccess: true,
+        fileName: fileName,
+        filePath: file.path,
+        userMessage: 'فایل «$fileName» ذخیره شد:\n${file.path}',
+      );
+    } catch (e) {
+      debugPrint('Export error: $e');
+      return ExportResult.error('خطا در صدور فایل: $e');
+    }
   }
 
-  /// Export single template to JSON file
-  Future<File> exportTemplateToJson(JournalTemplate template) async {
-    final file = await _createExportFile('PlanWiz_Template', template.title);
+  /// Export single template to JSON
+  Future<ExportResult> exportTemplateToJson(JournalTemplate template) async {
+    final safeTitle = template.title.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
+    final fileName = 'PlanWiz_Template_${safeTitle}_${DateTime.now().millisecondsSinceEpoch}.json';
     final payload = {
       'exportType': 'template',
       'appVersion': '1.0',
@@ -73,12 +156,13 @@ class NotebookExportService {
       'template': template.toJson(),
     };
     final jsonStr = const JsonEncoder.withIndent('  ').convert(payload);
-    return await file.writeAsString(jsonStr);
+    return await exportDataSmart(content: jsonStr, fileName: fileName, shareSubject: template.title);
   }
 
-  /// Export single page (with associated template if any) to JSON file
-  Future<File> exportPageToJson(NotebookPageModel page, {JournalTemplate? associatedTemplate}) async {
-    final file = await _createExportFile('PlanWiz_Page', page.title);
+  /// Export single page (with associated template if any) to JSON
+  Future<ExportResult> exportPageToJson(NotebookPageModel page, {JournalTemplate? associatedTemplate}) async {
+    final safeTitle = page.title.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
+    final fileName = 'PlanWiz_Page_${safeTitle}_${DateTime.now().millisecondsSinceEpoch}.json';
     final payload = {
       'exportType': 'page',
       'appVersion': '1.0',
@@ -87,30 +171,42 @@ class NotebookExportService {
       'associatedTemplate': associatedTemplate?.toJson(),
     };
     final jsonStr = const JsonEncoder.withIndent('  ').convert(payload);
-    return await file.writeAsString(jsonStr);
+    return await exportDataSmart(content: jsonStr, fileName: fileName, shareSubject: page.title);
   }
 
-  /// Export complete notebook data as a standalone JSON backup file
-  Future<File> exportJsonBackup(NotebookModel notebook) async {
+  /// Export complete notebook data as a standalone JSON backup
+  Future<ExportResult> exportJsonBackup(NotebookModel notebook) async {
     return exportNotebookToJson(notebook);
   }
 
-  /// Export complete notebook to JSON file
-  Future<File> exportNotebookToJson(NotebookModel notebook) async {
-    final file = await _createExportFile('PlanWiz_Notebook', notebook.title);
+  /// Export complete notebook to JSON with all associated custom templates bundled
+  Future<ExportResult> exportNotebookToJson(NotebookModel notebook) async {
+    final safeTitle = notebook.title.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
+    final fileName = 'PlanWiz_Notebook_${safeTitle}_${DateTime.now().millisecondsSinceEpoch}.json';
+
+    // Collect all unique templates used in this notebook's pages
+    final List<JournalTemplate> associatedTemplates = [];
+    for (final page in notebook.pages) {
+      if (page.template != null && !associatedTemplates.any((t) => t.id == page.template!.id)) {
+        associatedTemplates.add(page.template!);
+      }
+    }
+
     final payload = {
       'exportType': 'notebook',
       'appVersion': '1.0',
       'exportedAt': DateTime.now().toIso8601String(),
       'notebook': notebook.toJson(),
+      'templates': associatedTemplates.map((t) => t.toJson()).toList(),
     };
     final jsonStr = const JsonEncoder.withIndent('  ').convert(payload);
-    return await file.writeAsString(jsonStr);
+    return await exportDataSmart(content: jsonStr, fileName: fileName, shareSubject: notebook.title);
   }
 
-  /// Export AI Vision Layout result to JSON file
-  Future<File> exportAiLayoutToJson(AILayoutResult layoutResult) async {
-    final file = await _createExportFile('PlanWiz_AILayout', layoutResult.title);
+  /// Export AI Vision Layout result to JSON
+  Future<ExportResult> exportAiLayoutToJson(AILayoutResult layoutResult) async {
+    final safeTitle = layoutResult.title.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
+    final fileName = 'PlanWiz_AILayout_${safeTitle}_${DateTime.now().millisecondsSinceEpoch}.json';
     final payload = {
       'exportType': 'ai_layout',
       'appVersion': '1.0',
@@ -118,17 +214,18 @@ class NotebookExportService {
       'aiLayout': layoutResult.toJson(),
     };
     final jsonStr = const JsonEncoder.withIndent('  ').convert(payload);
-    return await file.writeAsString(jsonStr);
+    return await exportDataSmart(content: jsonStr, fileName: fileName, shareSubject: layoutResult.title);
   }
 
   /// Export combined bundle containing multiple notebooks, templates, and pages
-  Future<File> exportCombinedBundleToJson({
+  Future<ExportResult> exportCombinedBundleToJson({
     List<NotebookModel>? notebooks,
     List<JournalTemplate>? templates,
     List<NotebookPageModel>? pages,
     String bundleTitle = 'Combined_Bundle',
   }) async {
-    final file = await _createExportFile('PlanWiz_Bundle', bundleTitle);
+    final safeTitle = bundleTitle.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
+    final fileName = 'PlanWiz_Bundle_${safeTitle}_${DateTime.now().millisecondsSinceEpoch}.json';
     final payload = {
       'exportType': 'combined_bundle',
       'appVersion': '1.0',
@@ -138,7 +235,7 @@ class NotebookExportService {
       'pages': pages?.map((p) => p.toJson()).toList() ?? [],
     };
     final jsonStr = const JsonEncoder.withIndent('  ').convert(payload);
-    return await file.writeAsString(jsonStr);
+    return await exportDataSmart(content: jsonStr, fileName: fileName, shareSubject: bundleTitle);
   }
 
   /// Parse and import JSON package string into appropriate domain objects
@@ -192,6 +289,8 @@ class NotebookExportService {
           if (decoded['associatedTemplate'] != null) {
             try {
               associatedTmpl = JournalTemplate.fromJson(decoded['associatedTemplate'] as Map<String, dynamic>);
+              JournalTemplate.registerTemplate(associatedTmpl);
+              NotebookStorageService.instance.saveOrUpdateCustomTemplate(associatedTmpl);
             } catch (_) {}
           }
           return ImportResult(
@@ -206,9 +305,21 @@ class NotebookExportService {
         if (exportType == 'notebook' || decoded.containsKey('notebook')) {
           final nMap = decoded['notebook'] as Map<String, dynamic>? ?? decoded;
           final notebook = NotebookModel.fromJson(nMap);
+          final List<JournalTemplate> loadedTemplates = [];
+          if (decoded['templates'] != null && decoded['templates'] is List) {
+            for (final t in decoded['templates']) {
+              try {
+                final tmpl = JournalTemplate.fromJson(t as Map<String, dynamic>);
+                loadedTemplates.add(tmpl);
+                JournalTemplate.registerTemplate(tmpl);
+                NotebookStorageService.instance.saveOrUpdateCustomTemplate(tmpl);
+              } catch (_) {}
+            }
+          }
           return ImportResult(
             type: PackageType.notebook,
             notebook: notebook,
+            templates: loadedTemplates.isNotEmpty ? loadedTemplates : null,
             message: 'دفترچه «${notebook.title}» با ${notebook.pages.length} برگه بازیابی شد.',
           );
         }
@@ -301,6 +412,13 @@ class NotebookExportService {
           buffer.writeln('- ${box.text}');
         }
       }
+      if (page.checkItems.isNotEmpty) {
+        buffer.writeln('☑️ چک‌باکس‌ها و کارها:');
+        for (final chk in page.checkItems) {
+          final mark = chk.isChecked ? '[✓]' : '[ ]';
+          buffer.writeln('- $mark ${chk.label.isNotEmpty ? chk.label : 'آیتم'}');
+        }
+      }
       buffer.writeln('\n---');
     }
 
@@ -309,10 +427,9 @@ class NotebookExportService {
   }
 
   /// Generate a clean printable HTML document for Save PDF / Print
-  Future<File> exportHtmlPrintableDocument(NotebookModel notebook) async {
-    final dir = await getApplicationDocumentsDirectory();
+  Future<ExportResult> exportHtmlPrintableDocument(NotebookModel notebook) async {
     final safeTitle = notebook.title.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
-    final file = File('${dir.path}/PlanWiz_Print_${safeTitle}_${DateTime.now().millisecondsSinceEpoch}.html');
+    final fileName = 'PlanWiz_Print_${safeTitle}_${DateTime.now().millisecondsSinceEpoch}.html';
 
     final dateFormat = DateFormat('yyyy/MM/dd HH:mm');
     final buffer = StringBuffer();
@@ -350,22 +467,83 @@ class NotebookExportService {
 
     for (int i = 0; i < notebook.pages.length; i++) {
       final page = notebook.pages[i];
+      final tmpl = page.template;
+      String? imageSrc;
+      if (tmpl != null) {
+        if (tmpl.imageBytes != null && tmpl.imageBytes!.isNotEmpty) {
+          imageSrc = 'data:image/jpeg;base64,${base64Encode(tmpl.imageBytes!)}';
+        } else if (tmpl.imageAsset != null && tmpl.imageAsset!.isNotEmpty) {
+          if (tmpl.imageAsset!.startsWith('data:') || tmpl.imageAsset!.startsWith('http')) {
+            imageSrc = tmpl.imageAsset;
+          } else if (!kIsWeb) {
+            try {
+              final f = File(tmpl.imageAsset!);
+              if (f.existsSync()) {
+                imageSrc = 'data:image/jpeg;base64,${base64Encode(f.readAsBytesSync())}';
+              }
+            } catch (_) {}
+          }
+        }
+      }
+
       buffer.writeln('''
     <div class="page-box">
-      <div class="page-title">برگه ${i + 1}: ${page.title}</div>
+      <div class="page-title">برگه ${i + 1}: ${_escapeHtml(page.title)}</div>
 ''');
-      if (page.noteTitle.isNotEmpty) {
-        buffer.writeln('      <h3>${page.noteTitle}</h3>');
-      }
-      if (page.noteBody.isNotEmpty) {
-        buffer.writeln('      <div class="note-content">${page.noteBody}</div>');
-      }
-      if (page.textBoxes.isNotEmpty) {
-        buffer.writeln('      <h4>یادداشت‌های اضافی:</h4><ul>');
-        for (final b in page.textBoxes) {
-          buffer.writeln('        <li>${b.text}</li>');
+
+      if (imageSrc != null && tmpl != null) {
+        // Visual Template Sheet with layers on top
+        final double canvasAspect = tmpl.aspectRatio > 0 ? tmpl.aspectRatio : 0.67;
+        buffer.writeln('''
+      <div style="position: relative; width: 100%; max-width: 580px; margin: 0 auto 16px; aspect-ratio: $canvasAspect; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 16px rgba(0,0,0,0.1); background: #ffffff;">
+        <img src="$imageSrc" style="width: 100%; height: 100%; object-fit: contain; position: absolute; top: 0; left: 0; display: block;" />
+''');
+        for (final box in page.textBoxes) {
+          final double leftPct = (box.normalizedX ?? (box.position.dx / 420.0)).clamp(0.0, 1.0) * 100;
+          final double topPct = (box.normalizedY ?? (box.position.dy / 630.0)).clamp(0.0, 1.0) * 100;
+          final double widthPct = (box.normalizedWidth ?? (box.width / 420.0)).clamp(0.05, 1.0) * 100;
+          final String colorHex = '#${(box.inkColor.toARGB32() & 0x00FFFFFF).toRadixString(16).padLeft(6, '0')}';
+          final String align = box.textAlign == TextAlign.left ? 'left' : (box.textAlign == TextAlign.center ? 'center' : 'right');
+          final String txt = box.text.isNotEmpty ? box.text : (box.hintText.isNotEmpty ? '' : '');
+          if (txt.isNotEmpty) {
+            buffer.writeln('''
+        <div style="position: absolute; left: ${leftPct.toStringAsFixed(2)}%; top: ${topPct.toStringAsFixed(2)}%; width: ${widthPct.toStringAsFixed(2)}%; font-size: ${box.fontSize}px; color: $colorHex; text-align: $align; font-weight: ${box.isBold ? 'bold' : 'normal'}; line-height: 1.45; white-space: pre-wrap; word-break: break-word; pointer-events: none;">${_escapeHtml(txt)}</div>
+''');
+          }
         }
-        buffer.writeln('      </ul>');
+
+        for (final chk in page.checkItems) {
+          final double leftPct = chk.normalizedX.clamp(0.0, 1.0) * 100;
+          final double topPct = chk.normalizedY.clamp(0.0, 1.0) * 100;
+          buffer.writeln('''
+        <div style="position: absolute; left: ${leftPct.toStringAsFixed(2)}%; top: ${topPct.toStringAsFixed(2)}%; font-size: 13px; color: #1e293b; font-weight: 500; pointer-events: none;">${chk.isChecked ? '☑' : '☐'} ${_escapeHtml(chk.label)}</div>
+''');
+        }
+
+        buffer.writeln('      </div>');
+      } else {
+        // Plain Page Style note
+        if (page.noteTitle.isNotEmpty) {
+          buffer.writeln('      <h3>${_escapeHtml(page.noteTitle)}</h3>');
+        }
+        if (page.noteBody.isNotEmpty) {
+          buffer.writeln('      <div class="note-content">${_escapeHtml(page.noteBody)}</div>');
+        }
+        if (page.cueText.isNotEmpty) {
+          buffer.writeln('      <div style="margin-top: 10px; color: #64748b;"><strong>نکات کلیدی:</strong> ${_escapeHtml(page.cueText)}</div>');
+        }
+        if (page.summaryText.isNotEmpty) {
+          buffer.writeln('      <div style="margin-top: 10px; color: #64748b;"><strong>خلاصه:</strong> ${_escapeHtml(page.summaryText)}</div>');
+        }
+        if (page.textBoxes.isNotEmpty) {
+          buffer.writeln('      <h4>یادداشت‌های اضافی:</h4><ul>');
+          for (final b in page.textBoxes) {
+            if (b.text.trim().isNotEmpty) {
+              buffer.writeln('        <li>${_escapeHtml(b.text)}</li>');
+            }
+          }
+          buffer.writeln('      </ul>');
+        }
       }
       buffer.writeln('    </div>');
     }
@@ -375,6 +553,20 @@ class NotebookExportService {
 </body>
 </html>''');
 
-    return await file.writeAsString(buffer.toString());
+    return await exportDataSmart(
+      content: buffer.toString(),
+      fileName: fileName,
+      mimeType: 'text/html',
+      shareSubject: 'سند چاپی ${notebook.title}',
+    );
+  }
+
+  String _escapeHtml(String text) {
+    return text
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;');
   }
 }

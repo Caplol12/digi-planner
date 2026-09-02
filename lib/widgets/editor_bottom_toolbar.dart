@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import '../theme/app_theme.dart';
 
@@ -35,9 +37,15 @@ class EditorBottomToolbar extends StatelessWidget {
   Widget build(BuildContext context) {
     final hasSelection = hasSelectedBox || hasSelectedSticker;
     final showTextTools = isPageStyleMode || hasSelectedBox;
+    final bottomInset = math.max(MediaQuery.of(context).padding.bottom, kIsWeb ? 12.0 : 8.0);
 
     return Container(
-      padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 8),
+      padding: EdgeInsets.only(
+        left: 8,
+        right: 8,
+        top: 6,
+        bottom: bottomInset,
+      ),
       decoration: BoxDecoration(
         color: Colors.white,
         border: const Border(top: BorderSide(color: AppTheme.dividerLight, width: 1)),
@@ -49,11 +57,9 @@ class EditorBottomToolbar extends StatelessWidget {
           ),
         ],
       ),
-      child: SafeArea(
-        top: false,
-        child: SingleChildScrollView(
-          scrollDirection: Axis.horizontal,
-          child: Row(
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
             children: [
               // Template Mode: Add Text Box
               if (!isPageStyleMode)
@@ -131,8 +137,7 @@ class EditorBottomToolbar extends StatelessWidget {
             ],
           ),
         ),
-      ),
-    );
+      );
   }
 
   Widget _buildToolItem({

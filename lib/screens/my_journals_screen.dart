@@ -183,7 +183,7 @@ class _MyJournalsScreenState extends State<MyJournalsScreen> {
                   : ResponsiveLayout.isDesktop(context) || ResponsiveLayout.isTablet(context)
                       ? GridView.builder(
                           controller: _scrollController,
-                          padding: const EdgeInsets.only(left: 20, right: 20, top: 16, bottom: 80),
+                          padding: const EdgeInsets.only(left: 20, right: 20, top: 16, bottom: 110),
                           gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
                             crossAxisCount: ResponsiveLayout.getGridColumnCount(context, tabletCount: 2, desktopCount: 3),
                             childAspectRatio: 2.1,
@@ -213,7 +213,7 @@ class _MyJournalsScreenState extends State<MyJournalsScreen> {
                         )
                       : ListView.builder(
                           controller: _scrollController,
-                          padding: const EdgeInsets.only(top: 8, bottom: 80),
+                          padding: const EdgeInsets.only(top: 8, bottom: 110),
                           itemCount: filteredNotebooks.length,
                           itemBuilder: (context, index) {
                             final nb = filteredNotebooks[index];
@@ -243,7 +243,7 @@ class _MyJournalsScreenState extends State<MyJournalsScreen> {
         if (_showScrollToTop)
           Positioned(
             right: 20,
-            bottom: 80,
+            bottom: 110,
             child: FloatingActionButton.small(
               heroTag: 'scroll_top_notebooks',
               onPressed: _scrollToTop,

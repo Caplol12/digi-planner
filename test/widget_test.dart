@@ -17,7 +17,8 @@ void main() {
     addTearDown(() => tester.view.resetPhysicalSize());
 
     await tester.pumpWidget(const JournalApp());
-    await tester.pumpAndSettle();
+    await tester.pump(const Duration(milliseconds: 500));
+    await tester.pump(const Duration(milliseconds: 500));
 
     expect(find.textContaining('ژورنال'), findsWidgets);
     expect(find.textContaining('قالب‌ها'), findsWidgets);
@@ -25,7 +26,7 @@ void main() {
 
     // Open create modal and verify create page option is present
     await tester.tap(find.text('ژورنال جدید'));
-    await tester.pumpAndSettle();
+    await tester.pump(const Duration(milliseconds: 500));
     expect(find.textContaining('ساخت برگه با سبک دلخواه'), findsOneWidget);
   });
 
@@ -114,7 +115,8 @@ void main() {
     expect(nextStepFinder, findsOneWidget);
     await tester.ensureVisible(nextStepFinder);
     await tester.tap(nextStepFinder);
-    await tester.pumpAndSettle();
+    await tester.pump(const Duration(milliseconds: 500));
+    await tester.pump(const Duration(milliseconds: 500));
 
     // Step 2: Verify AI Scanning and Boxes Placement
     expect(find.textContaining('اسکن هوشمند و تعیین باکس‌ها'), findsWidgets);
@@ -124,7 +126,8 @@ void main() {
     final chipFinder = find.text('یک چک‌لیست اولویت‌ها اضافه کن');
     expect(chipFinder, findsOneWidget);
     await tester.tap(chipFinder);
-    await tester.pumpAndSettle();
+    await tester.pump(const Duration(milliseconds: 500));
+    await tester.pump(const Duration(milliseconds: 500));
 
     // Verify proceed button
     expect(find.textContaining('تایید و ورود به ویرایشگر برگه'), findsOneWidget);
