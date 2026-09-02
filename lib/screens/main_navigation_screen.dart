@@ -597,89 +597,92 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (context) => SafeArea(
-        child: Container(
-          constraints: BoxConstraints(
-            maxHeight: MediaQuery.of(context).size.height * 0.85,
-          ),
-          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
-          decoration: const BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
-          ),
-          child: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Center(
-                  child: Container(
-                    width: 40,
-                    height: 4,
-                    decoration: BoxDecoration(
-                      color: Colors.grey.shade300,
-                      borderRadius: BorderRadius.circular(2),
+        child: Material(
+          color: Colors.white,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
+          clipBehavior: Clip.antiAlias,
+          child: Container(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.of(context).size.height * 0.85,
+            ),
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Center(
+                    child: Container(
+                      width: 40,
+                      height: 4,
+                      decoration: BoxDecoration(
+                        color: Colors.grey.shade300,
+                        borderRadius: BorderRadius.circular(2),
+                      ),
                     ),
                   ),
-                ),
-                const SizedBox(height: 16),
-                const Text(
-                  'ایجاد دفترچه یا برگه جدید',
-                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
-                ),
-                const SizedBox(height: 16),
+                  const SizedBox(height: 16),
+                  const Text(
+                    'ایجاد دفترچه یا برگه جدید',
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+                  ),
+                  const SizedBox(height: 16),
 
-                // Option 1: Create Notebook with custom cover (Image 1)
-                Container(
-                  decoration: BoxDecoration(
+                  // Option 1: Create Notebook with custom cover (Image 1)
+                  Material(
                     color: const Color(0xFFFFF3E0),
-                    borderRadius: BorderRadius.circular(16),
-                    border: Border.all(color: const Color(0xFFFFCC80), width: 1.5),
-                  ),
-                  child: ListTile(
-                    leading: Container(
-                      padding: const EdgeInsets.all(10),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFE07A5F),
-                        borderRadius: BorderRadius.circular(12),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(16),
+                      side: const BorderSide(color: Color(0xFFFFCC80), width: 1.5),
+                    ),
+                    child: ListTile(
+                      leading: Container(
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFE07A5F),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: const Icon(Icons.book_rounded, color: Colors.white),
                       ),
-                      child: const Icon(Icons.book_rounded, color: Colors.white),
+                      title: const Text(
+                        'ایجاد دفترچه جدید (طراحی جلد)',
+                        style: TextStyle(fontWeight: FontWeight.w800, color: Color(0xFFBF360C)),
+                      ),
+                      subtitle: const Text('انتخاب رنگ جلد، تصویر از گالری و نام‌گذاری دفترچه'),
+                      trailing: const Icon(Icons.chevron_left_rounded, size: 22, color: Color(0xFFBF360C)),
+                      onTap: () {
+                        Navigator.pop(context);
+                        _createNewNotebook();
+                      },
                     ),
-                    title: const Text(
-                      'ایجاد دفترچه جدید (طراحی جلد)',
-                      style: TextStyle(fontWeight: FontWeight.w800, color: Color(0xFFBF360C)),
-                    ),
-                    subtitle: const Text('انتخاب رنگ جلد، تصویر از گالری و نام‌گذاری دفترچه'),
-                    trailing: const Icon(Icons.chevron_left_rounded, size: 22, color: Color(0xFFBF360C)),
-                    onTap: () {
-                      Navigator.pop(context);
-                      _createNewNotebook();
-                    },
                   ),
-                ),
-                const SizedBox(height: 10),
+                  const SizedBox(height: 10),
 
-                // Option 2: AI Vision Pro Template Builder
-                Container(
-                  decoration: BoxDecoration(
-                    gradient: const LinearGradient(
-                      colors: [Color(0xFFFFF1EB), Color(0xFFFFE3D8)],
-                    ),
-                    borderRadius: BorderRadius.circular(16),
-                    border: Border.all(color: const Color(0xFFFFCCBC), width: 1.5),
-                  ),
-                  child: ListTile(
-                    leading: Container(
-                      padding: const EdgeInsets.all(10),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFFF7043),
-                        borderRadius: BorderRadius.circular(12),
+                  // Option 2: AI Vision Pro Template Builder
+                  Container(
+                    decoration: BoxDecoration(
+                      gradient: const LinearGradient(
+                        colors: [Color(0xFFFFF1EB), Color(0xFFFFE3D8)],
                       ),
-                      child: const Icon(Icons.auto_awesome_rounded, color: Colors.white),
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: const Color(0xFFFFCCBC), width: 1.5),
                     ),
-                    title: const Row(
+                    child: Material(
+                      color: Colors.transparent,
+                      child: ListTile(
+                        leading: Container(
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFFF7043),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: const Icon(Icons.auto_awesome_rounded, color: Colors.white),
+                        ),
+                    title: const Wrap(
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      spacing: 6,
                       children: [
                         Text('ساخت قالب حرفه‌ای', style: TextStyle(fontWeight: FontWeight.w800, color: Color(0xFFBF360C))),
-                        SizedBox(width: 6),
                         Text('(هوش مصنوعی)', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFFFF7043))),
                       ],
                     ),
@@ -691,7 +694,8 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
                     },
                   ),
                 ),
-                const SizedBox(height: 10),
+              ),
+              const SizedBox(height: 10),
 
                 // Option 3: Choose Page Style
                 ListTile(
@@ -768,8 +772,9 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
           ),
         ),
       ),
-    );
-  }
+    ),
+  );
+}
 
   void _showSettingsDialog() {
     showDialog(
@@ -796,7 +801,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
                   Navigator.pop(context);
                   widget.onToggleTheme();
                 },
-                activeColor: AppTheme.primaryColor,
+                activeThumbColor: AppTheme.primaryColor,
               ),
             ),
             const Divider(),

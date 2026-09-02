@@ -93,6 +93,34 @@ class JournalTemplate {
         'isFavorite': isFavorite,
       };
 
+  static final Map<int, IconData> _iconMap = {
+    Icons.calendar_view_day_rounded.codePoint: Icons.calendar_view_day_rounded,
+    Icons.psychology_rounded.codePoint: Icons.psychology_rounded,
+    Icons.favorite_border_rounded.codePoint: Icons.favorite_border_rounded,
+    Icons.check_circle_outline_rounded.codePoint: Icons.check_circle_outline_rounded,
+    Icons.auto_awesome_rounded.codePoint: Icons.auto_awesome_rounded,
+    Icons.grid_view_rounded.codePoint: Icons.grid_view_rounded,
+    Icons.today_rounded.codePoint: Icons.today_rounded,
+    Icons.bolt_rounded.codePoint: Icons.bolt_rounded,
+    Icons.favorite_rounded.codePoint: Icons.favorite_rounded,
+    Icons.format_list_bulleted_rounded.codePoint: Icons.format_list_bulleted_rounded,
+    Icons.edit_note_rounded.codePoint: Icons.edit_note_rounded,
+    Icons.note_rounded.codePoint: Icons.note_rounded,
+    Icons.menu_book_rounded.codePoint: Icons.menu_book_rounded,
+    Icons.star_rounded.codePoint: Icons.star_rounded,
+    Icons.access_time_rounded.codePoint: Icons.access_time_rounded,
+    Icons.style_rounded.codePoint: Icons.style_rounded,
+  };
+
+  static IconData _resolveIcon(int? codePoint, [String? templateId]) {
+    if (templateId != null) {
+      final existing = findTemplateById(templateId);
+      if (existing != null) return existing.icon;
+    }
+    if (codePoint == null) return Icons.grid_view_rounded;
+    return _iconMap[codePoint] ?? Icons.grid_view_rounded;
+  }
+
   factory JournalTemplate.fromJson(Map<String, dynamic> json) {
     Uint8List? bytes;
     if (json['imageBytesBase64'] != null && (json['imageBytesBase64'] as String).isNotEmpty) {
@@ -105,15 +133,17 @@ class JournalTemplate {
         .map((s) => TemplateSection.fromJson(s as Map<String, dynamic>))
         .toList();
 
+    final templateId = json['id'] as String? ?? 't_${DateTime.now().millisecondsSinceEpoch}';
+
     return JournalTemplate(
-      id: json['id'] as String? ?? 't_${DateTime.now().millisecondsSinceEpoch}',
+      id: templateId,
       title: json['title'] as String? ?? 'قالب جدید',
       categoryId: json['categoryId'] as String? ?? 'daily',
       subtitle: json['subtitle'] as String? ?? '',
       themeColor: Color((json['themeColor'] as int?) ?? 0xFF5B7A9C),
       cardBackground: Color((json['cardBackground'] as int?) ?? 0xFFF3F7FD),
       isPro: json['isPro'] as bool? ?? false,
-      icon: IconData(json['iconCodePoint'] as int? ?? Icons.grid_view_rounded.codePoint, fontFamily: 'MaterialIcons'),
+      icon: _resolveIcon(json['iconCodePoint'] as int?, templateId),
       imageAsset: json['imageAsset'] as String?,
       imageBytes: bytes,
       tags: (json['tags'] as List? ?? []).map((e) => e.toString()).toList(),

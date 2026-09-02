@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:journal_app/main.dart';
 import 'package:journal_app/screens/choose_page_style_screen.dart';
 import 'package:journal_app/screens/pro_template_builder_screen.dart';
@@ -11,21 +12,28 @@ import 'package:journal_app/widgets/draggable_text_box.dart';
 import 'package:journal_app/widgets/bounded_writing_zone.dart';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
+  setUp(() {
+    SharedPreferences.setMockInitialValues({});
+  });
+
   testWidgets('JournalApp loads main navigation and tabs', (WidgetTester tester) async {
-    tester.view.physicalSize = const Size(1080, 1920);
+    tester.view.physicalSize = const Size(600, 1000);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(() => tester.view.resetPhysicalSize());
 
     await tester.pumpWidget(const JournalApp());
-    await tester.pump(const Duration(milliseconds: 500));
-    await tester.pump(const Duration(milliseconds: 500));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.pump(const Duration(milliseconds: 300));
 
-    expect(find.textContaining('ژورنال'), findsWidgets);
+    expect(find.textContaining('ژورنال‌ها'), findsWidgets);
     expect(find.textContaining('قالب‌ها'), findsWidgets);
-    expect(find.textContaining('ژورنال جدید'), findsWidgets);
+    expect(find.text('ایجاد'), findsOneWidget);
 
     // Open create modal and verify create page option is present
-    await tester.tap(find.text('ژورنال جدید'));
+    await tester.tap(find.text('ایجاد'));
     await tester.pump(const Duration(milliseconds: 500));
     expect(find.textContaining('ساخت برگه با سبک دلخواه'), findsOneWidget);
   });
@@ -115,12 +123,12 @@ void main() {
     expect(nextStepFinder, findsOneWidget);
     await tester.ensureVisible(nextStepFinder);
     await tester.tap(nextStepFinder);
-    await tester.pump(const Duration(milliseconds: 500));
-    await tester.pump(const Duration(milliseconds: 500));
+    await tester.pump(const Duration(seconds: 2));
+    await tester.pump(const Duration(seconds: 1));
 
     // Step 2: Verify AI Scanning and Boxes Placement
     expect(find.textContaining('اسکن هوشمند و تعیین باکس‌ها'), findsWidgets);
-    expect(find.textContaining('باکس متن را متناسب با خطوط تصویر قرار داد'), findsOneWidget);
+    expect(find.textContaining('متناسب با خطوط و بخش‌ها قرار داد'), findsOneWidget);
 
     // Tap on suggestion chip
     final chipFinder = find.text('یک چک‌لیست اولویت‌ها اضافه کن');
