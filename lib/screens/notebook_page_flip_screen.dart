@@ -436,9 +436,11 @@ class _NotebookPageFlipScreenState extends State<NotebookPageFlipScreen> {
 
       if (result != null && result.files.isNotEmpty) {
         final picked = result.files.first;
-        String? imageUri = await saveLocalImageFile(bytes: picked.bytes, sourcePath: picked.path);
-        if (imageUri == null && picked.bytes != null) {
-          imageUri = 'data:image/png;base64,${base64Encode(picked.bytes!)}';
+        final rawBytes = picked.bytes ?? (picked.path != null ? await readBytesFromPath(picked.path!) : null);
+        final safeBytes = rawBytes != null ? compressImageBytes(rawBytes, maxDimension: 800, quality: 80) : null;
+        String? imageUri = await saveLocalImageFile(bytes: safeBytes, sourcePath: picked.path);
+        if (imageUri == null && safeBytes != null) {
+          imageUri = 'data:image/jpeg;base64,${base64Encode(safeBytes)}';
         } else if (imageUri == null && picked.path != null) {
           imageUri = picked.path;
         }

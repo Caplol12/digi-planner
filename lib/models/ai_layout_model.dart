@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:uuid/uuid.dart';
+import '../widgets/platform_image_helper.dart';
 import 'text_box_model.dart';
 import 'check_item_model.dart';
 
@@ -237,16 +238,23 @@ class AILayoutResult {
     DateTime? detectedAt,
   }) : detectedAt = detectedAt ?? DateTime.now();
 
-  Map<String, dynamic> toJson() => {
-        'imagePath': imagePath,
-        if (imageBytes != null) 'imageBytesBase64': base64Encode(imageBytes!),
-        'aspectRatio': aspectRatio,
-        'title': title,
-        'detectedBoxes': detectedBoxes.map((b) => b.toJson()).toList(),
-        'checkpoints': checkpoints.map((c) => c.toJson()).toList(),
-        'analysisEngine': analysisEngine,
-        'detectedAt': detectedAt.toIso8601String(),
-      };
+  Map<String, dynamic> toJson() {
+    String? b64;
+    if (imageBytes != null && imageBytes!.isNotEmpty) {
+      final safeBytes = compressImageBytes(imageBytes!, maxDimension: 1024, quality: 75);
+      b64 = base64Encode(safeBytes);
+    }
+    return {
+      'imagePath': imagePath,
+      if (b64 != null) 'imageBytesBase64': b64,
+      'aspectRatio': aspectRatio,
+      'title': title,
+      'detectedBoxes': detectedBoxes.map((b) => b.toJson()).toList(),
+      'checkpoints': checkpoints.map((c) => c.toJson()).toList(),
+      'analysisEngine': analysisEngine,
+      'detectedAt': detectedAt.toIso8601String(),
+    };
+  }
 
   factory AILayoutResult.fromJson(Map<String, dynamic> json) {
     final boxesJson = json['detectedBoxes'] as List? ?? [];

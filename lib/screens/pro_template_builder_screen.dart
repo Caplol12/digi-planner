@@ -88,18 +88,29 @@ class _ProTemplateBuilderScreenState extends State<ProTemplateBuilderScreen> {
 
       if (result != null && result.files.isNotEmpty) {
         final file = result.files.first;
-        double? detectedRatio;
-        if (file.bytes != null && file.bytes!.isNotEmpty) {
-          try {
-            final decoded = await decodeImageFromList(file.bytes!);
-            if (decoded.height > 0) {
-              detectedRatio = decoded.width / decoded.height;
-            }
-          } catch (_) {}
+        final rawBytes = file.bytes ?? (file.path != null ? await readBytesFromPath(file.path!) : null);
+        if (rawBytes == null || rawBytes.isEmpty) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: const Text('خطا در خواندن داده‌های تصویر انتخاب شده.'),
+                backgroundColor: Colors.red.shade700,
+              ),
+            );
+          }
+          return;
         }
 
+        double? detectedRatio;
+        try {
+          final decoded = await decodeImageFromList(rawBytes);
+          if (decoded.height > 0) {
+            detectedRatio = decoded.width / decoded.height;
+          }
+        } catch (_) {}
+
         setState(() {
-          _selectedImageBytes = file.bytes;
+          _selectedImageBytes = rawBytes;
           _selectedImagePath = file.path ?? '';
           _selectedFileName = file.name;
           if (detectedRatio != null) {
@@ -179,6 +190,9 @@ class _ProTemplateBuilderScreenState extends State<ProTemplateBuilderScreen> {
         countMsg += ' متناسب با خطوط و بخش‌ها قرار داد.';
 
         setState(() {
+          if (result.imageBytes != null && result.imageBytes!.isNotEmpty) {
+            _selectedImageBytes = result.imageBytes;
+          }
           _analysisResult = AILayoutResult(
             imagePath: result.imagePath,
             imageBytes: _selectedImageBytes,

@@ -8,6 +8,7 @@ import 'package:image/image.dart' as img;
 import '../models/ai_layout_model.dart';
 import '../widgets/platform_image_helper.dart';
 import 'ai_subscription_service.dart';
+import 'app_logger.dart';
 import 'supabase_service.dart';
 import 'user_ai_preferences_service.dart';
 
@@ -67,9 +68,33 @@ class AiVisionLayoutService {
     ];
   }
 
-  /// Optimizes, downscales and encodes image to JPEG (max 1024px, 80% quality)
-  /// for optimal AI Vision inference speed and lowest payload size.
-  static Future<Uint8List> _optimizeImageForVision(Uint8List originalBytes) async {
+  /// Sniffs image MIME type from initial magic bytes
+  static String _sniffMime(Uint8List bytes) {
+    if (bytes.length >= 8 &&
+        bytes[0] == 0x89 &&
+        bytes[1] == 0x50 &&
+        bytes[2] == 0x4E &&
+        bytes[3] == 0x47) {
+      return 'image/png';
+    }
+    if (bytes.length >= 3 &&
+        bytes[0] == 0xFF &&
+        bytes[1] == 0xD8 &&
+        bytes[2] == 0xFF) {
+      return 'image/jpeg';
+    }
+    if (bytes.length >= 4 &&
+        bytes[0] == 0x52 &&
+        bytes[1] == 0x49 &&
+        bytes[2] == 0x46 &&
+        bytes[3] == 0x46) {
+      return 'image/webp';
+    }
+    return 'image/jpeg';
+  }
+
+  /// Optimizes, downscales and encodes image, returning bytes and matching MIME type.
+  static Future<(Uint8List, String)> _optimizeImageForVision(Uint8List originalBytes) async {
     try {
       final decoded = img.decodeImage(originalBytes);
       if (decoded != null) {
@@ -84,7 +109,7 @@ class AiVisionLayoutService {
         }
         final jpegBytes = Uint8List.fromList(img.encodeJpg(resized, quality: 80));
         debugPrint('⚡ Optimized vision image with package:image from ${originalBytes.lengthInBytes ~/ 1024}KB to ${jpegBytes.lengthInBytes ~/ 1024}KB');
-        return jpegBytes;
+        return (jpegBytes, 'image/jpeg');
       }
     } catch (e) {
       debugPrint('ℹ️ Image package optimize note: $e');
@@ -100,11 +125,11 @@ class AiVisionLayoutService {
       final image = frame.image;
       final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
       if (byteData != null) {
-        return byteData.buffer.asUint8List();
+        return (byteData.buffer.asUint8List(), 'image/png');
       }
     } catch (_) {}
 
-    return originalBytes;
+    return (originalBytes, _sniffMime(originalBytes));
   }
 
   /// Analyzes an image with Multimodal AI Vision (OpenAI/Kimi/Gemini Vision compatible via Supabase/9router config)
@@ -131,6 +156,12 @@ class AiVisionLayoutService {
             0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
           ]);
         }
+      } else if (imagePath.startsWith('data:image') || imagePath.startsWith('data:')) {
+        try {
+          final commaIdx = imagePath.indexOf(',');
+          final b64 = commaIdx != -1 ? imagePath.substring(commaIdx + 1) : imagePath;
+          bytes = base64Decode(b64);
+        } catch (_) {}
       } else {
         bytes = await readBytesFromPath(imagePath);
       }
@@ -139,6 +170,9 @@ class AiVisionLayoutService {
     if (bytes == null || bytes.isEmpty) {
       throw Exception('فایل تصویر معتبر یافت نشد یا داده‌های تصویر خالی است.');
     }
+
+    // Optimize and downsample image bytes to prevent massive payloads and storage limits
+    final (optBytes, _) = await _optimizeImageForVision(bytes);
 
     await UserAiPreferencesService.ensureLoaded();
     final isGoogleAi = UserAiPreferencesService.activeProvider == AiProviderType.googleAiStudio &&
@@ -153,7 +187,7 @@ class AiVisionLayoutService {
       engineUsed = '$geminiModel (Google AI Studio)';
 
       detectedBoxes = await _callGeminiVisionApi(
-        bytes: bytes,
+        bytes: optBytes,
         apiKey: apiKey,
         model: geminiModel,
         aspectRatio: aspectRatio,
@@ -168,7 +202,7 @@ class AiVisionLayoutService {
       if (_isUnderAutomatedTest) {
         return AILayoutResult(
           imagePath: imagePath ?? '',
-          imageBytes: bytes,
+          imageBytes: optBytes,
           aspectRatio: aspectRatio,
           title: 'قالب استخراج‌شده هوشمند',
           detectedBoxes: _getTestMockBoxes(),
@@ -181,7 +215,7 @@ class AiVisionLayoutService {
 
       try {
         detectedBoxes = await _callVisionApi(
-          bytes: bytes,
+          bytes: optBytes,
           config: config,
           aspectRatio: aspectRatio,
         );
@@ -203,7 +237,7 @@ class AiVisionLayoutService {
 
     return AILayoutResult(
       imagePath: imagePath ?? '',
-      imageBytes: bytes,
+      imageBytes: optBytes,
       aspectRatio: aspectRatio,
       title: 'قالب استخراج‌شده هوشمند',
       detectedBoxes: detectedBoxes,
@@ -218,7 +252,7 @@ class AiVisionLayoutService {
     required String model,
     required double aspectRatio,
   }) async {
-    final optimizedBytes = await _optimizeImageForVision(bytes);
+    final (optimizedBytes, mimeType) = await _optimizeImageForVision(bytes);
     final base64Image = base64Encode(optimizedBytes);
 
     final prompt = '''
@@ -276,7 +310,7 @@ class AiVisionLayoutService {
               {'text': prompt},
               {
                 'inline_data': {
-                  'mime_type': 'image/jpeg',
+                  'mime_type': mimeType,
                   'data': base64Image,
                 }
               }
@@ -286,7 +320,7 @@ class AiVisionLayoutService {
         'generationConfig': {
           'responseMimeType': 'application/json',
           'temperature': 0.2,
-          'maxOutputTokens': 4000,
+          'maxOutputTokens': 8000,
         },
       }),
     ).timeout(const Duration(seconds: 90));
@@ -295,7 +329,12 @@ class AiVisionLayoutService {
       final decoded = jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
       final candidates = decoded['candidates'] as List?;
       if (candidates != null && candidates.isNotEmpty) {
-        final content = candidates[0]['content'];
+        final firstCandidate = candidates[0];
+        final finishReason = firstCandidate['finishReason']?.toString();
+        if (finishReason == 'MAX_TOKENS') {
+          throw Exception('تعداد کادرهای این برگه بسیار زیاد است و سقف توکن هوش مصنوعی (MAX_TOKENS) پر شد. لطفاً تصویر ساده‌تر یا بخشی از صفحه را انتخاب نمایید.');
+        }
+        final content = firstCandidate['content'];
         if (content != null && content['parts'] != null) {
           final parts = content['parts'] as List;
           final text = parts.map((p) => p['text'] ?? '').join('\n');
@@ -316,15 +355,108 @@ class AiVisionLayoutService {
     return null;
   }
 
+  /// اولین شیء JSON متوازن را از یک رشته استخراج می‌کند
+  static String? _firstBalancedJsonObject(String s) {
+    final start = s.indexOf('{');
+    if (start == -1) return null;
+    int depth = 0;
+    bool inStr = false, esc = false;
+    for (int i = start; i < s.length; i++) {
+      final ch = s[i];
+      if (inStr) {
+        if (esc) {
+          esc = false;
+        } else if (ch == r'\') {
+          esc = true;
+        } else if (ch == '"') {
+          inStr = false;
+        }
+        continue;
+      }
+      if (ch == '"') {
+        inStr = true;
+      } else if (ch == '{') {
+        depth++;
+      } else if (ch == '}') {
+        depth--;
+        if (depth == 0) return s.substring(start, i + 1);
+      }
+    }
+    return null;
+  }
+
+  /// بدنه پاسخ chat/completions را با تحمل SSE، استریم و JSON چندتایی دیکود می‌کند
+  static Map<String, dynamic>? _decodeChatBody(String rawBody) {
+    final body = rawBody.trim();
+    if (body.isEmpty) return null;
+
+    // ۱) JSON سالم و استاندارد
+    try {
+      final d = jsonDecode(body);
+      if (d is Map<String, dynamic>) return d;
+    } catch (_) {}
+
+    // ۲) استریم چندبخشی SSE (data: {...})
+    if (body.contains('data:')) {
+      final buf = StringBuffer();
+      Map<String, dynamic>? last;
+      for (final rawLine in body.split('\n')) {
+        var line = rawLine.trim();
+        if (!line.startsWith('data:')) continue;
+        line = line.substring(5).trim();
+        if (line.isEmpty || line == '[DONE]') continue;
+        try {
+          final chunk = jsonDecode(line) as Map<String, dynamic>;
+          last = chunk;
+          final choices = chunk['choices'] as List?;
+          if (choices != null && choices.isNotEmpty) {
+            final c = choices[0] as Map<String, dynamic>;
+            final piece = (c['delta'] as Map?)?['content'] ??
+                (c['message'] as Map?)?['content'];
+            if (piece is String) {
+              buf.write(piece);
+            } else if (piece is List) {
+              for (final p in piece) {
+                if (p is Map && p['text'] != null) {
+                  buf.write(p['text']);
+                }
+              }
+            }
+          }
+        } catch (_) {}
+      }
+      if (buf.isNotEmpty) {
+        return {
+          'choices': [
+            {
+              'message': {'role': 'assistant', 'content': buf.toString()}
+            }
+          ]
+        };
+      }
+      if (last != null) return last;
+    }
+
+    // ۳) چند شیء پشت سر هم: اولی متوازن را بردار
+    final first = _firstBalancedJsonObject(body);
+    if (first != null) {
+      try {
+        final d = jsonDecode(first);
+        if (d is Map<String, dynamic>) return d;
+      } catch (_) {}
+    }
+    return null;
+  }
+
   /// Sends image to Multimodal Vision endpoint
   static Future<List<DetectedBox>?> _callVisionApi({
     required Uint8List bytes,
     required AiConfig config,
     required double aspectRatio,
   }) async {
-    final optimizedBytes = await _optimizeImageForVision(bytes);
+    final (optimizedBytes, mimeType) = await _optimizeImageForVision(bytes);
     final base64Image = base64Encode(optimizedBytes);
-    final dataUri = 'data:image/jpeg;base64,$base64Image';
+    final dataUri = 'data:$mimeType;base64,$base64Image';
 
     final prompt = '''
 شما یک سیستم هوش مصنوعی متخصص در تحلیل ساختار و چیدمان صفحات ژورنال، پلنر و دفاتر برنامه‌ریزی هستید.
@@ -362,64 +494,83 @@ class AiVisionLayoutService {
 }
 ''';
 
-    final cleanBaseUrl = config.baseUrl.replaceAll(RegExp(r'/+$'), '');
-    final url = Uri.parse('$cleanBaseUrl/chat/completions');
-    final response = await http.post(
-      url,
-      headers: {
+    final Uri url;
+    final Map<String, String> headers;
+    if (kIsWeb) {
+      url = Uri.parse('${SupabaseService.supabaseUrl}/functions/v1/ai-vision-proxy');
+      headers = {
+        'Authorization': 'Bearer ${SupabaseService.supabaseAnonKey}',
+        'Content-Type': 'application/json',
+      };
+    } else {
+      final cleanBaseUrl = config.baseUrl.replaceAll(RegExp(r'/+$'), '');
+      url = Uri.parse('$cleanBaseUrl/chat/completions');
+      headers = {
         'Authorization': 'Bearer ${config.apiKey}',
         'Content-Type': 'application/json',
         'Accept': 'application/json',
-      },
-      body: jsonEncode({
-        'model': config.model,
-        'messages': [
-          {
-            'role': 'user',
-            'content': [
-              {'type': 'text', 'text': prompt},
-              {
-                'type': 'image_url',
-                'image_url': {'url': dataUri}
-              }
-            ]
-          }
-        ],
-        'temperature': 0.2,
-        'max_tokens': 4000,
-      }),
-    ).timeout(const Duration(seconds: 90));
-
-    if (response.statusCode == 200) {
-      String rawBody = utf8.decode(response.bodyBytes).trim();
-      // Clean trailing data: [DONE] or SSE markers
-      if (rawBody.contains('data: [DONE]')) {
-        rawBody = rawBody.replaceAll(RegExp(r'data:\s*\[DONE\]', caseSensitive: false), '').trim();
-      }
-      if (rawBody.startsWith('data:')) {
-        rawBody = rawBody.substring(5).trim();
-      }
-
-      final decoded = jsonDecode(rawBody) as Map<String, dynamic>;
-      final choices = decoded['choices'] as List?;
-      if (choices != null && choices.isNotEmpty) {
-        final firstChoice = choices[0];
-        String content = '';
-        if (firstChoice['message'] != null) {
-          final msgContent = firstChoice['message']['content'];
-          if (msgContent is String) {
-            content = msgContent;
-          } else if (msgContent is List) {
-            content = msgContent.map((part) => part['text'] ?? '').join('\n');
-          }
-        }
-        return _extractBoxesFromAiText(content);
-      }
-    } else {
-      throw Exception('پاسخ ناموفق از سرور هوش مصنوعی (${response.statusCode}): ${response.body}');
+      };
     }
 
-    return null;
+    try {
+      final response = await http.post(
+        url,
+        headers: headers,
+        body: jsonEncode({
+          'model': config.model,
+          'stream': false,
+          'messages': [
+            {
+              'role': 'user',
+              'content': [
+                {'type': 'text', 'text': prompt},
+                {
+                  'type': 'image_url',
+                  'image_url': {'url': dataUri}
+                }
+              ]
+            }
+          ],
+          'temperature': 0.2,
+          'max_tokens': 8000,
+        }),
+      ).timeout(const Duration(seconds: 90));
+
+      final decoded = _decodeChatBody(utf8.decode(response.bodyBytes));
+
+      if (response.statusCode != 200) {
+        final msg = (decoded?['error'] as Map?)?['message']?.toString() ?? '';
+        throw Exception('پاسخ ناموفق از سرور هوش مصنوعی (${response.statusCode})${msg.isEmpty ? '' : ': $msg'}');
+      }
+      if (decoded == null) {
+        throw Exception('پاسخ سرور قابل خواندن نبود (فرمت نامعتبر).');
+      }
+
+      final choices = decoded['choices'] as List?;
+      if (choices == null || choices.isEmpty) {
+        throw Exception('سرور هوش مصنوعی پاسخ خالی برگرداند.');
+      }
+
+      final firstChoice = choices[0] as Map<String, dynamic>;
+      final finishReason = firstChoice['finish_reason'] ?? firstChoice['finishReason'];
+      if (finishReason == 'length') {
+        throw Exception('پاسخ مدل ناقص ماند (سقف توکن). برگه را ساده‌تر کنید یا دوباره تلاش کنید.');
+      }
+
+      String content = '';
+      if (firstChoice['message'] != null) {
+        final msgContent = firstChoice['message']['content'];
+        if (msgContent is String) {
+          content = msgContent;
+        } else if (msgContent is List) {
+          content = msgContent.map((part) => part['text'] ?? '').join('\n');
+        }
+      }
+      return _extractBoxesFromAiText(content);
+    } catch (e, st) {
+      AppLog.e('AiVisionLayoutService', 'خطا در ارتباط با سرور هوش مصنوعی: $e', st);
+      rethrow;
+    }
   }
 
   /// Helper to cleanly extract a JSON object from AI text, removing markdown & footer metadata
@@ -550,6 +701,7 @@ class AiVisionLayoutService {
       if (geminiRes != null) {
         return geminiRes;
       }
+      throw Exception('پاسخ معتبری از مدل Gemini برای این ویرایش دریافت نشد.');
     }
 
     // Check default AI subscription quota
@@ -594,16 +746,30 @@ class AiVisionLayoutService {
 }
 ''';
 
-      final cleanBaseUrl = config.baseUrl.replaceAll(RegExp(r'/+$'), '');
-      final response = await http.post(
-        Uri.parse('$cleanBaseUrl/chat/completions'),
-        headers: {
+      final Uri url;
+      final Map<String, String> headers;
+      if (kIsWeb) {
+        url = Uri.parse('${SupabaseService.supabaseUrl}/functions/v1/ai-vision-proxy');
+        headers = {
+          'Authorization': 'Bearer ${SupabaseService.supabaseAnonKey}',
+          'Content-Type': 'application/json',
+        };
+      } else {
+        final cleanBaseUrl = config.baseUrl.replaceAll(RegExp(r'/+$'), '');
+        url = Uri.parse('$cleanBaseUrl/chat/completions');
+        headers = {
           'Authorization': 'Bearer ${config.apiKey}',
           'Content-Type': 'application/json',
           'Accept': 'application/json',
-        },
+        };
+      }
+
+      final response = await http.post(
+        url,
+        headers: headers,
         body: jsonEncode({
           'model': config.model,
+          'stream': false,
           'messages': [
             {'role': 'system', 'content': systemPrompt},
             {
@@ -612,23 +778,24 @@ class AiVisionLayoutService {
             }
           ],
           'temperature': 0.3,
-          'max_tokens': 3000,
+          'max_tokens': 8000,
         }),
       ).timeout(const Duration(seconds: 60));
 
       if (response.statusCode == 200) {
-        String rawBody = utf8.decode(response.bodyBytes).trim();
-        if (rawBody.contains('data: [DONE]')) {
-          rawBody = rawBody.replaceAll(RegExp(r'data:\s*\[DONE\]', caseSensitive: false), '').trim();
-        }
-        if (rawBody.startsWith('data:')) {
-          rawBody = rawBody.substring(5).trim();
-        }
-
-        final decoded = jsonDecode(rawBody) as Map<String, dynamic>;
-        final choices = decoded['choices'] as List?;
+        final decoded = _decodeChatBody(utf8.decode(response.bodyBytes));
+        final choices = decoded?['choices'] as List?;
         if (choices != null && choices.isNotEmpty) {
-          final content = choices[0]['message']?['content'] as String? ?? '';
+          final firstChoice = choices[0] as Map<String, dynamic>;
+          String content = '';
+          if (firstChoice['message'] != null) {
+            final msgContent = firstChoice['message']['content'];
+            if (msgContent is String) {
+              content = msgContent;
+            } else if (msgContent is List) {
+              content = msgContent.map((part) => part['text'] ?? '').join('\n');
+            }
+          }
           final resObj = _cleanAndExtractJsonObject(content);
           if (resObj != null) {
             final rawBoxes = resObj['updatedBoxes'] as List? ?? [];
@@ -719,7 +886,7 @@ class AiVisionLayoutService {
           'generationConfig': {
             'responseMimeType': 'application/json',
             'temperature': 0.3,
-            'maxOutputTokens': 3000,
+            'maxOutputTokens': 8000,
           },
         }),
       ).timeout(const Duration(seconds: 60));
@@ -728,7 +895,12 @@ class AiVisionLayoutService {
         final decoded = jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
         final candidates = decoded['candidates'] as List?;
         if (candidates != null && candidates.isNotEmpty) {
-          final content = candidates[0]['content'];
+          final firstCandidate = candidates[0];
+          final finishReason = firstCandidate['finishReason']?.toString();
+          if (finishReason == 'MAX_TOKENS') {
+            throw Exception('سقف تولید پاسخ هوش مصنوعی (MAX_TOKENS) به پایان رسید. لطفاً دستور کوچک‌تری ارسال نمایید.');
+          }
+          final content = firstCandidate['content'];
           if (content != null && content['parts'] != null) {
             final parts = content['parts'] as List;
             final text = parts.map((p) => p['text'] ?? '').join('\n');
@@ -759,9 +931,19 @@ class AiVisionLayoutService {
             }
           }
         }
+      } else {
+        String errMsg = 'پاسخ ناموفق از سرور Google Gemini (${response.statusCode})';
+        try {
+          final decoded = jsonDecode(utf8.decode(response.bodyBytes));
+          if (decoded['error']?['message'] != null) {
+            errMsg += ': ${decoded['error']['message']}';
+          }
+        } catch (_) {}
+        throw Exception(errMsg);
       }
-    } catch (e) {
-      debugPrint('Gemini Chat Edit error: $e');
+    } catch (e, st) {
+      AppLog.e('AiVision', 'Gemini Chat Edit failed: $e', st);
+      throw Exception('خطای Google AI Studio در ویرایش چت: $e');
     }
     return null;
   }

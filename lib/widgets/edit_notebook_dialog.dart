@@ -5,6 +5,7 @@ import 'package:google_fonts/google_fonts.dart';
 import '../models/notebook_model.dart';
 import 'notebook_cover_widget.dart';
 import 'color_picker_sheet.dart';
+import 'platform_image_helper.dart';
 
 class EditNotebookDialog extends StatefulWidget {
   final NotebookModel? notebook;
@@ -85,10 +86,12 @@ class _EditNotebookDialogState extends State<EditNotebookDialog> {
       );
       if (result != null && result.files.isNotEmpty) {
         final picked = result.files.first;
-        if (picked.bytes != null) {
-          final b64 = base64Encode(picked.bytes!);
+        final rawBytes = picked.bytes ?? (picked.path != null ? await readBytesFromPath(picked.path!) : null);
+        if (rawBytes != null) {
+          final safeBytes = compressImageBytes(rawBytes, maxDimension: 600, quality: 80);
+          final b64 = base64Encode(safeBytes);
           setState(() {
-            _coverImagePath = 'data:image/png;base64,$b64';
+            _coverImagePath = 'data:image/jpeg;base64,$b64';
           });
         } else if (picked.path != null) {
           setState(() {

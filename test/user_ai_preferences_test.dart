@@ -60,16 +60,23 @@ void main() {
     expect(result.message, contains('لطفاً ابتدا کلید API را وارد کنید'));
   });
 
+  test('UserAiPreferencesService returns failure when testing key without AIzaSy prefix', () async {
+    final result = await UserAiPreferencesService.testGeminiConnection(
+      apiKey: 'invalid_dummy_key_without_aizasy_prefix',
+      model: 'gemini-2.5-flash',
+    );
+
+    expect(result.isSuccess, isFalse);
+    expect(result.message, contains('AIzaSy'));
+  });
+
   test('UserAiPreferencesService has valid list of recommended Gemini models', () {
     expect(UserAiPreferencesService.availableModels, isNotEmpty);
-    expect(UserAiPreferencesService.availableModels.any((m) => m.id == 'gemini-3.5-flash'), isTrue);
-    expect(UserAiPreferencesService.availableModels.any((m) => m.id == 'gemini-3.5-pro'), isTrue);
-    expect(UserAiPreferencesService.availableModels.any((m) => m.id == 'gemini-3.1-flash'), isTrue);
-    expect(UserAiPreferencesService.availableModels.any((m) => m.id == 'gemini-3.1-pro'), isTrue);
-    expect(UserAiPreferencesService.availableModels.any((m) => m.id == 'gemini-3.0-flash'), isTrue);
-    expect(UserAiPreferencesService.availableModels.any((m) => m.id == 'gemini-3.0-pro'), isTrue);
     expect(UserAiPreferencesService.availableModels.any((m) => m.id == 'gemini-2.5-flash'), isTrue);
-    expect(UserAiPreferencesService.availableModels.any((m) => m.id == 'gemini-2.0-flash'), isTrue);
     expect(UserAiPreferencesService.availableModels.any((m) => m.id == 'gemini-2.5-pro'), isTrue);
+    expect(UserAiPreferencesService.availableModels.any((m) => m.id == 'gemini-2.0-flash'), isTrue);
+    expect(UserAiPreferencesService.availableModels.any((m) => m.id == 'gemini-2.0-flash-lite'), isTrue);
+    expect(UserAiPreferencesService.availableModels.any((m) => m.id == 'gemini-1.5-flash'), isTrue);
+    expect(UserAiPreferencesService.availableModels.any((m) => m.id == 'gemini-1.5-pro'), isTrue);
   });
 }

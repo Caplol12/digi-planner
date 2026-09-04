@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
@@ -45,64 +46,39 @@ class UserAiPreferencesService {
     aOptions: AndroidOptions(encryptedSharedPreferences: true),
   );
 
-  static const String defaultGeminiModel = 'gemini-3.5-flash';
+  static const String defaultGeminiModel = 'gemini-2.5-flash';
 
   static const List<GeminiModelOption> availableModels = [
     GeminiModelOption(
-      id: 'gemini-3.5-flash',
-      displayName: 'Gemini 3.5 Flash',
-      description: 'پیشرفته‌ترین، پرسرعت‌ترین و دقیق‌ترین مدل چندوجهی بینایی (پیشنهادی)',
-      isRecommended: true,
-    ),
-    GeminiModelOption(
-      id: 'gemini-3.5-pro',
-      displayName: 'Gemini 3.5 Pro',
-      description: 'بالاترین سطح درک فضایی و استدلال عمیق برای برگه‌های بسیار پیچیده',
-    ),
-    GeminiModelOption(
-      id: 'gemini-3.1-flash',
-      displayName: 'Gemini 3.1 Flash',
-      description: 'نسل ۳.۱ فوق‌سریع برای استخراج فوری چیدمان و کادرهای متن',
-    ),
-    GeminiModelOption(
-      id: 'gemini-3.1-pro',
-      displayName: 'Gemini 3.1 Pro',
-      description: 'نسل ۳.۱ با تمرکز بر تفکیک دقیق خطوط و المان‌های تو در تو',
-    ),
-    GeminiModelOption(
-      id: 'gemini-3.0-flash',
-      displayName: 'Gemini 3.0 Flash',
-      description: 'مدل پرچمدار سریع نسل ۳ با کارایی و سرعت پاسخگویی بالا',
-    ),
-    GeminiModelOption(
-      id: 'gemini-3.0-pro',
-      displayName: 'Gemini 3.0 Pro',
-      description: 'مدل تحلیلی عمیق نسل ۳ با دقت بصری بالا',
-    ),
-    GeminiModelOption(
       id: 'gemini-2.5-flash',
       displayName: 'Gemini 2.5 Flash',
-      description: 'مدل پایدار و بهینه بینایی نسل ۲.۵',
+      description: 'پیشرفته‌ترین، پرسرعت‌ترین و دقیق‌ترین مدل بینایی و درک تصویر (پیشنهادی)',
+      isRecommended: true,
     ),
     GeminiModelOption(
       id: 'gemini-2.5-pro',
       displayName: 'Gemini 2.5 Pro',
-      description: 'مدل استدلالی با عمق تحلیل بالا نسل ۲.۵',
+      description: 'بالاترین سطح استدلال و تحلیل عمیق برای برگه‌های پیچیده',
     ),
     GeminiModelOption(
       id: 'gemini-2.0-flash',
       displayName: 'Gemini 2.0 Flash',
-      description: 'مدل پرسرعت و سبک نسل ۲ با درک دیداری مناسب',
+      description: 'مدل پرسرعت و سبک نسل ۲ با کارایی بصری عالی',
+    ),
+    GeminiModelOption(
+      id: 'gemini-2.0-flash-lite',
+      displayName: 'Gemini 2.0 Flash Lite',
+      description: 'نسخه کم‌مصرف و فوق‌سریع نسل ۲ برای استخراج فوری چیدمان',
     ),
     GeminiModelOption(
       id: 'gemini-1.5-flash',
       displayName: 'Gemini 1.5 Flash',
-      description: 'مدل سبک و پایدار نسل پیشین',
+      description: 'مدل کلاسیک و پایدار با پشتیبانی گسترده در تمام مناطق',
     ),
     GeminiModelOption(
       id: 'gemini-1.5-pro',
       displayName: 'Gemini 1.5 Pro',
-      description: 'مدل حرفه‌ای نسل اول',
+      description: 'مدل حرفه‌ای نسل اول برای ساختاردهی متنی سنگین',
     ),
   ];
 
@@ -158,7 +134,7 @@ class UserAiPreferencesService {
       try {
         final secureKey = await _secureStorage
             .read(key: _keyGeminiApiKey)
-            .timeout(const Duration(milliseconds: 500));
+            .timeout(const Duration(seconds: 2));
         if (secureKey != null && secureKey.isNotEmpty) {
           _geminiApiKey = secureKey;
         } else {
@@ -167,8 +143,10 @@ class UserAiPreferencesService {
             _geminiApiKey = legacyKey;
             await _secureStorage
                 .write(key: _keyGeminiApiKey, value: legacyKey)
-                .timeout(const Duration(milliseconds: 500));
-            await prefs.remove(_keyGeminiApiKey);
+                .timeout(const Duration(seconds: 2));
+            if (!kIsWeb) {
+              await prefs.remove(_keyGeminiApiKey);
+            }
           } else {
             _geminiApiKey = '';
           }
@@ -215,8 +193,12 @@ class UserAiPreferencesService {
       try {
         await _secureStorage
             .write(key: _keyGeminiApiKey, value: _geminiApiKey)
-            .timeout(const Duration(milliseconds: 500));
-        await prefs.remove(_keyGeminiApiKey); // Ensure removed from plaintext prefs
+            .timeout(const Duration(seconds: 2));
+        if (!kIsWeb) {
+          await prefs.remove(_keyGeminiApiKey); // Ensure removed from plaintext prefs on native
+        } else {
+          await prefs.setString(_keyGeminiApiKey, _geminiApiKey); // Web fallback persistence
+        }
       } catch (_) {
         await prefs.setString(_keyGeminiApiKey, _geminiApiKey);
       }
@@ -238,6 +220,13 @@ class UserAiPreferencesService {
       return const GeminiConnectionTestResult(
         isSuccess: false,
         message: 'لطفاً ابتدا کلید API را وارد کنید.',
+      );
+    }
+
+    if (!cleanKey.startsWith('AIzaSy')) {
+      return const GeminiConnectionTestResult(
+        isSuccess: false,
+        message: 'فرمت کلید نامعتبر است. کلید معتبر Google AI Studio باید با پیشوند AIzaSy آغاز شود.',
       );
     }
 
@@ -284,8 +273,12 @@ class UserAiPreferencesService {
             final status = err['status']?.toString() ?? '';
             if (status == 'API_KEY_INVALID' || msg.toLowerCase().contains('api key not valid')) {
               errorDetail = 'کلید API وارد شده نامعتبر است. لطفاً کلید دریافتی از aistudio.google.com را دوباره بررسی کنید.';
+            } else if (status == 'UNAUTHENTICATED' || msg.toLowerCase().contains('invalid authentication credentials')) {
+              errorDetail = 'احراز هویت ناموفق بود. کلید وارد شده کلید استاندارد Google AI Studio نیست.';
             } else if (msg.toLowerCase().contains('not found') || status == 'NOT_FOUND') {
               errorDetail = 'مدل «$cleanModel» برای این حساب فعال نیست یا نام مدل اشتباه است.';
+            } else if (response.statusCode == 403 || msg.toLowerCase().contains('permission_denied') || msg.toLowerCase().contains('location')) {
+              errorDetail = 'دسترسی رد شد (403). لطفاً اتصال فیلترشکن را بررسی کنید و مطمئن شوید کلید شما در گوگل کلود محدودیت دامنه (HTTP referrer) ندارد.';
             } else if (response.statusCode == 429 || msg.toLowerCase().contains('quota')) {
               errorDetail = 'سهمیه مجاز (Quota) شما در گوگل به اتمام رسیده است یا محدودیت درخواست رخ داده است.';
             } else {
@@ -308,6 +301,8 @@ class UserAiPreferencesService {
         msg = 'زمان درخواست به پایان رسید (Timeout). لطفاً اتصال اینترنت خود را بررسی نمایید.';
       } else if (e.toString().contains('SocketException') || e.toString().contains('HandshakeException')) {
         msg = 'عدم دسترسی به سرورهای گوگل. لطفاً اتصال اینترنت یا پروکسی/فیلترشکن را بررسی کنید.';
+      } else if (kIsWeb && e.toString().toLowerCase().contains('xmlhttprequest')) {
+        msg = 'خطای ارتباط در مرورگر (CORS): دسترسی به سرور هوش مصنوعی مسدود شد. مطمئن شوید کلید شما در Google AI Studio محدودیت دامنه ندارد.';
       }
       return GeminiConnectionTestResult(
         isSuccess: false,

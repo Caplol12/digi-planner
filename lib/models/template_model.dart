@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import '../widgets/platform_image_helper.dart';
 
 class TemplateCategory {
   final String id;
@@ -76,22 +77,29 @@ class JournalTemplate {
     }
   }
 
-  Map<String, dynamic> toJson() => {
-        'id': id,
-        'title': title,
-        'categoryId': categoryId,
-        'subtitle': subtitle,
-        'themeColor': themeColor.toARGB32(),
-        'cardBackground': cardBackground.toARGB32(),
-        'isPro': isPro,
-        'iconCodePoint': icon.codePoint,
-        'imageAsset': imageAsset,
-        'imageBytesBase64': imageBytes != null ? base64Encode(imageBytes!) : null,
-        'tags': tags,
-        'sections': sections.map((s) => s.toJson()).toList(),
-        'aspectRatio': aspectRatio,
-        'isFavorite': isFavorite,
-      };
+  Map<String, dynamic> toJson() {
+    String? b64;
+    if (imageBytes != null && imageBytes!.isNotEmpty) {
+      final safeBytes = compressImageBytes(imageBytes!, maxDimension: 1024, quality: 75);
+      b64 = base64Encode(safeBytes);
+    }
+    return {
+      'id': id,
+      'title': title,
+      'categoryId': categoryId,
+      'subtitle': subtitle,
+      'themeColor': themeColor.toARGB32(),
+      'cardBackground': cardBackground.toARGB32(),
+      'isPro': isPro,
+      'iconCodePoint': icon.codePoint,
+      'imageAsset': imageAsset,
+      'imageBytesBase64': b64,
+      'tags': tags,
+      'sections': sections.map((s) => s.toJson()).toList(),
+      'aspectRatio': aspectRatio,
+      'isFavorite': isFavorite,
+    };
+  }
 
   static final Map<int, IconData> _iconMap = {
     Icons.calendar_view_day_rounded.codePoint: Icons.calendar_view_day_rounded,
