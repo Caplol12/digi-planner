@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:uuid/uuid.dart';
 
 enum CheckboxShape {
   square, // Task checklist ☐
@@ -15,8 +16,6 @@ enum CheckboxStyle {
 }
 
 class InteractiveCheckItem {
-  static int _counter = 0;
-
   final String id;
   String label;
   double normalizedX;      // 0.0 to 1.0
@@ -70,7 +69,7 @@ class InteractiveCheckItem {
     final rawId = json['id']?.toString().trim();
     final effectiveId = (rawId != null && rawId.isNotEmpty)
         ? rawId
-        : 'chk_${DateTime.now().millisecondsSinceEpoch}_${++_counter}';
+        : 'chk_${const Uuid().v4()}';
 
     return InteractiveCheckItem(
       id: effectiveId,

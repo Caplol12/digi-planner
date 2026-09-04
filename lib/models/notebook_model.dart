@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:uuid/uuid.dart';
 import 'page_style_model.dart';
 import 'template_model.dart';
 import 'text_box_model.dart';
@@ -104,10 +105,18 @@ class NotebookPageModel {
       noteBody: noteBody ?? this.noteBody,
       cueText: cueText ?? this.cueText,
       summaryText: summaryText ?? this.summaryText,
-      textBoxes: textBoxes ?? List.from(this.textBoxes),
-      stickers: stickers ?? List.from(this.stickers),
-      checkItems: checkItems ?? List.from(this.checkItems),
-      drawingStrokes: drawingStrokes ?? List.from(this.drawingStrokes),
+      textBoxes: textBoxes != null
+          ? List.from(textBoxes)
+          : this.textBoxes.map((e) => e.copyWith()).toList(),
+      stickers: stickers != null
+          ? List.from(stickers)
+          : this.stickers.map((e) => e.copyWith()).toList(),
+      checkItems: checkItems != null
+          ? List.from(checkItems)
+          : this.checkItems.map((e) => e.copyWith()).toList(),
+      drawingStrokes: drawingStrokes != null
+          ? List.from(drawingStrokes)
+          : this.drawingStrokes.map((e) => e.copyWith()).toList(),
       scheduledDate: scheduledDate ?? this.scheduledDate,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? DateTime.now(),
@@ -170,7 +179,7 @@ class NotebookPageModel {
     }
 
     return NotebookPageModel(
-      id: json['id'] as String? ?? 'p_${DateTime.now().millisecondsSinceEpoch}',
+      id: json['id'] as String? ?? 'p_${const Uuid().v4()}',
       title: json['title'] as String? ?? 'برگه یادداشت',
       pageStyle: json['pageStyle'] != null
           ? PageStyleConfig.fromJson(json['pageStyle'] as Map<String, dynamic>)
@@ -337,7 +346,9 @@ class NotebookModel {
       coverColor: coverColor ?? this.coverColor,
       coverImagePath: coverImagePath ?? this.coverImagePath,
       folderName: folderName ?? this.folderName,
-      pages: pages ?? List.from(this.pages),
+      pages: pages != null
+          ? List.from(pages)
+          : this.pages.map((p) => p.copyWith()).toList(),
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? DateTime.now(),
       isFavorite: isFavorite ?? this.isFavorite,
@@ -367,7 +378,7 @@ class NotebookModel {
     }
 
     return NotebookModel(
-      id: json['id'] as String? ?? 'nb_${DateTime.now().millisecondsSinceEpoch}',
+      id: json['id'] as String? ?? 'nb_${const Uuid().v4()}',
       title: json['title'] as String? ?? 'دفترچه جدید',
       coverColor: Color(json['coverColor'] as int? ?? 0xFFE07A5F),
       coverImagePath: json['coverImagePath'] as String?,

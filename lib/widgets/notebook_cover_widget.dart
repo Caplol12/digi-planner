@@ -1,8 +1,7 @@
 import 'dart:convert';
-import 'dart:io';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'platform_image_helper.dart';
 
 class NotebookCoverWidget extends StatelessWidget {
   final String title;
@@ -62,18 +61,13 @@ class NotebookCoverWidget extends StatelessWidget {
       );
     }
 
-    // 4. Local File (only on native platforms, never on Web)
-    if (!kIsWeb) {
-      try {
-        final file = File(path);
-        if (file.existsSync()) {
-          return Image.file(
-            file,
-            fit: BoxFit.cover,
-            errorBuilder: (_, __, ___) => const SizedBox.shrink(),
-          );
-        }
-      } catch (_) {}
+    // 4. Local File (safe on Web and native)
+    if (platformFileExists(path)) {
+      return buildPlatformFileImage(
+        filePath: path,
+        fit: BoxFit.cover,
+        errorWidget: const SizedBox.shrink(),
+      );
     }
 
     // 5. Fallback: try raw base64 decode if string is pure base64

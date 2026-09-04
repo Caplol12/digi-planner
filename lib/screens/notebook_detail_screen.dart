@@ -1,19 +1,19 @@
 import 'dart:convert';
-import 'dart:io';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:uuid/uuid.dart';
 import '../models/notebook_model.dart';
 import '../models/template_model.dart';
 import '../services/notebook_storage_service.dart';
 import '../services/notebook_export_service.dart';
-import '../widgets/paper_pattern_painter.dart';
 import '../widgets/edit_notebook_dialog.dart';
 import '../widgets/planner_context_menu.dart';
 import '../widgets/responsive_layout.dart';
+import '../widgets/platform_image_helper.dart';
+import '../widgets/page_thumbnail_preview.dart';
 import 'choose_page_style_screen.dart';
 import 'notebook_page_flip_screen.dart';
 
@@ -42,10 +42,27 @@ class _NotebookDetailScreenState extends State<NotebookDetailScreen> {
     _notebook = widget.notebook;
   }
 
-  void _saveNotebook() {
-    NotebookStorageService.instance.saveOrUpdateNotebook(_notebook);
+  @override
+  void dispose() {
+    super.dispose();
+  }
+
+  Future<bool> _saveNotebook({bool showFeedback = false}) async {
+    final success = await NotebookStorageService.instance.saveOrUpdateNotebook(_notebook);
     widget.onNotebookUpdated(_notebook);
-    setState(() {});
+    if (mounted) {
+      setState(() {});
+      if (showFeedback) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(success ? 'دفترچه با موفقیت ذخیره شد.' : 'خطا در ذخیره دفترچه.'),
+            backgroundColor: success ? const Color(0xFF2E7D32) : Colors.red,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    }
+    return success;
   }
 
   void _openPageFlipAt(int index) async {
@@ -191,32 +208,36 @@ class _NotebookDetailScreenState extends State<NotebookDetailScreen> {
     );
   }
 
-  void _renamePage(NotebookPageModel page) {
+  void _renamePage(NotebookPageModel page) async {
     final renameCtrl = TextEditingController(text: page.title);
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Text('تغییر نام برگه', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-        content: TextField(
-          controller: renameCtrl,
-          decoration: const InputDecoration(hintText: 'عنوان برگه', border: OutlineInputBorder()),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('انصراف')),
-          ElevatedButton(
-            onPressed: () {
-              if (renameCtrl.text.trim().isNotEmpty) {
-                setState(() => page.title = renameCtrl.text.trim());
-                _saveNotebook();
-              }
-              Navigator.pop(context);
-            },
-            child: const Text('ذخیره'),
+    try {
+      await showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: const Text('تغییر نام برگه', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+          content: TextField(
+            controller: renameCtrl,
+            decoration: const InputDecoration(hintText: 'عنوان برگه', border: OutlineInputBorder()),
           ),
-        ],
-      ),
-    );
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context), child: const Text('انصراف')),
+            ElevatedButton(
+              onPressed: () {
+                if (renameCtrl.text.trim().isNotEmpty) {
+                  setState(() => page.title = renameCtrl.text.trim());
+                  _saveNotebook();
+                }
+                Navigator.pop(context);
+              },
+              child: const Text('ذخیره'),
+            ),
+          ],
+        ),
+      );
+    } finally {
+      renameCtrl.dispose();
+    }
   }
 
   void _deletePageAt(int index) {
@@ -276,7 +297,12 @@ class _NotebookDetailScreenState extends State<NotebookDetailScreen> {
 
       if (result != null && result.files.isNotEmpty) {
         final bytes = result.files.first.bytes;
-        final fileStr = bytes != null ? utf8.decode(bytes) : await File(result.files.first.path!).readAsString();
+        final rawBytes = bytes ??
+            (result.files.first.path != null
+                ? await readBytesFromPath(result.files.first.path!)
+                : null);
+        if (rawBytes == null) return;
+        final fileStr = utf8.decode(rawBytes);
         final importRes = NotebookExportService.instance.importPackageFromJson(fileStr);
 
         if (importRes.isSuccess) {
@@ -350,18 +376,17 @@ class _NotebookDetailScreenState extends State<NotebookDetailScreen> {
   }
 
   void _duplicateNotebook() {
-    final duplicated = NotebookModel(
-      id: 'nb_${DateTime.now().millisecondsSinceEpoch}',
+    final duplicated = _notebook.copyWith(
+      id: const Uuid().v4(),
       title: '${_notebook.title} (کپی)',
-      coverColor: _notebook.coverColor,
-      coverImagePath: _notebook.coverImagePath,
-      folderName: _notebook.folderName,
       pages: _notebook.pages
-          .map((p) => p.copyWith(id: 'p_${DateTime.now().millisecondsSinceEpoch}_${p.id}'))
+          .map((p) => p.copyWith(id: const Uuid().v4()))
           .toList(),
-      isFavorite: _notebook.isFavorite,
+      createdAt: DateTime.now(),
+      updatedAt: DateTime.now(),
     );
     NotebookStorageService.instance.saveOrUpdateNotebook(duplicated);
+    widget.onNotebookUpdated(duplicated);
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text('نسخه کپی از «${_notebook.title}» ساخته شد.'),
@@ -414,81 +439,85 @@ class _NotebookDetailScreenState extends State<NotebookDetailScreen> {
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('دفترچه «${_notebook.title}» به عنوان ویجت فعال انتخاب شد.'),
+          content: Text('دفترچه «${_notebook.title}» به عنوان برگزیده و دسترسی سریع سنجاق شد.'),
           behavior: SnackBarBehavior.floating,
         ),
       );
     }
   }
 
-  void _addNotebookToFolder() {
+  void _addNotebookToFolder() async {
     final folderCtrl = TextEditingController(text: _notebook.folderName ?? '');
     final presetFolders = ['شخصی', 'کاری', 'مطالعه', 'برنامه‌ریزی', 'ایده‌ها'];
 
-    showDialog(
-      context: context,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setDialogState) => AlertDialog(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-          title: const Text('پوشه‌بندی دفترچه', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              TextField(
-                controller: folderCtrl,
-                decoration: const InputDecoration(
-                  labelText: 'نام پوشه',
-                  hintText: 'مثال: کاری، شخصی',
-                  border: OutlineInputBorder(),
+    try {
+      await showDialog(
+        context: context,
+        builder: (context) => StatefulBuilder(
+          builder: (context, setDialogState) => AlertDialog(
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+            title: const Text('پوشه‌بندی دفترچه', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                TextField(
+                  controller: folderCtrl,
+                  decoration: const InputDecoration(
+                    labelText: 'نام پوشه',
+                    hintText: 'مثال: کاری، شخصی',
+                    border: OutlineInputBorder(),
+                  ),
                 ),
-              ),
-              const SizedBox(height: 12),
-              const Text('پوشه‌های پیشنهادی:', style: TextStyle(fontSize: 12, color: Colors.grey)),
-              const SizedBox(height: 8),
-              Wrap(
-                spacing: 6,
-                children: presetFolders.map((f) {
-                  return ActionChip(
-                    label: Text(f, style: const TextStyle(fontSize: 11)),
-                    onPressed: () {
-                      setDialogState(() {
-                        folderCtrl.text = f;
-                      });
-                    },
-                  );
-                }).toList(),
-              ),
-            ],
-          ),
-          actions: [
-            if (_notebook.folderName != null && _notebook.folderName!.isNotEmpty)
+                const SizedBox(height: 12),
+                const Text('پوشه‌های پیشنهادی:', style: TextStyle(fontSize: 12, color: Colors.grey)),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 6,
+                  children: presetFolders.map((f) {
+                    return ActionChip(
+                      label: Text(f, style: const TextStyle(fontSize: 11)),
+                      onPressed: () {
+                        setDialogState(() {
+                          folderCtrl.text = f;
+                        });
+                      },
+                    );
+                  }).toList(),
+                ),
+              ],
+            ),
+            actions: [
+              if (_notebook.folderName != null && _notebook.folderName!.isNotEmpty)
+                TextButton(
+                  onPressed: () {
+                    setState(() => _notebook.folderName = null);
+                    _saveNotebook();
+                    Navigator.pop(context);
+                  },
+                  child: const Text('حذف از پوشه', style: TextStyle(color: Colors.red)),
+                ),
               TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('انصراف'),
+              ),
+              ElevatedButton(
                 onPressed: () {
-                  setState(() => _notebook.folderName = null);
+                  setState(() {
+                    _notebook.folderName = folderCtrl.text.trim().isEmpty ? null : folderCtrl.text.trim();
+                  });
                   _saveNotebook();
                   Navigator.pop(context);
                 },
-                child: const Text('حذف از پوشه', style: TextStyle(color: Colors.red)),
+                child: const Text('تایید'),
               ),
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('انصراف'),
-            ),
-            ElevatedButton(
-              onPressed: () {
-                setState(() {
-                  _notebook.folderName = folderCtrl.text.trim().isEmpty ? null : folderCtrl.text.trim();
-                });
-                _saveNotebook();
-                Navigator.pop(context);
-              },
-              child: const Text('تایید'),
-            ),
-          ],
+            ],
+          ),
         ),
-      ),
-    );
+      );
+    } finally {
+      folderCtrl.dispose();
+    }
   }
 
   Future<void> _saveNotebookToGallery() async {
@@ -716,39 +745,7 @@ class _NotebookDetailScreenState extends State<NotebookDetailScreen> {
           children: [
             // Page Preview Content
             Positioned.fill(
-              child: page.template != null
-                  ? _buildTemplateThumbnail(page.template!)
-                  : PaperPatternWidget(
-                      config: page.pageStyle,
-                      isThumbnail: true,
-                      child: (page.noteTitle.isNotEmpty || page.noteBody.isNotEmpty)
-                          ? Padding(
-                              padding: const EdgeInsets.all(10.0),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  if (page.noteTitle.isNotEmpty)
-                                    Text(
-                                      page.noteTitle,
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
-                                    ),
-                                  if (page.noteBody.isNotEmpty)
-                                    Padding(
-                                      padding: const EdgeInsets.only(top: 4.0),
-                                      child: Text(
-                                        page.noteBody,
-                                        maxLines: 5,
-                                        overflow: TextOverflow.ellipsis,
-                                        style: TextStyle(fontSize: 9, color: Colors.grey.shade700, height: 1.3),
-                                      ),
-                                    ),
-                                ],
-                              ),
-                            )
-                          : null,
-                    ),
+              child: PageThumbnailPreview(page: page),
             ),
 
             // Page Number Badge (Top-left)
@@ -866,106 +863,6 @@ class _NotebookDetailScreenState extends State<NotebookDetailScreen> {
             ),
           ],
         ),
-      ),
-    );
-  }
-
-  Widget _buildTemplateThumbnail(JournalTemplate tmpl) {
-    if (tmpl.imageBytes != null && tmpl.imageBytes!.isNotEmpty) {
-      return Center(
-        child: AspectRatio(
-          aspectRatio: tmpl.aspectRatio,
-          child: Image.memory(
-            tmpl.imageBytes!,
-            fit: BoxFit.contain,
-            errorBuilder: (_, __, ___) => _buildFallbackThumbnail(tmpl),
-          ),
-        ),
-      );
-    }
-
-    if (tmpl.imageAsset != null && tmpl.imageAsset!.isNotEmpty) {
-      final path = tmpl.imageAsset!;
-      if (path.startsWith('data:image') || path.startsWith('data:')) {
-        try {
-          final commaIdx = path.indexOf(',');
-          final b64 = commaIdx != -1 ? path.substring(commaIdx + 1) : path;
-          return Center(
-            child: AspectRatio(
-              aspectRatio: tmpl.aspectRatio,
-              child: Image.memory(
-                base64Decode(b64),
-                fit: BoxFit.contain,
-                errorBuilder: (_, __, ___) => _buildFallbackThumbnail(tmpl),
-              ),
-            ),
-          );
-        } catch (_) {}
-      }
-
-      if (path.startsWith('http://') || path.startsWith('https://') || path.startsWith('blob:')) {
-        return Center(
-          child: AspectRatio(
-            aspectRatio: tmpl.aspectRatio,
-            child: Image.network(
-              path,
-              fit: BoxFit.contain,
-              errorBuilder: (_, __, ___) => _buildFallbackThumbnail(tmpl),
-            ),
-          ),
-        );
-      }
-
-      if (path.startsWith('assets/')) {
-        return Center(
-          child: AspectRatio(
-            aspectRatio: tmpl.aspectRatio,
-            child: Image.asset(
-              path,
-              fit: BoxFit.contain,
-              errorBuilder: (_, __, ___) => _buildFallbackThumbnail(tmpl),
-            ),
-          ),
-        );
-      }
-
-      if (!kIsWeb) {
-        try {
-          final file = File(path);
-          if (file.existsSync()) {
-            return Center(
-              child: AspectRatio(
-                aspectRatio: tmpl.aspectRatio,
-                child: Image.file(
-                  file,
-                  fit: BoxFit.contain,
-                  errorBuilder: (_, __, ___) => _buildFallbackThumbnail(tmpl),
-                ),
-              ),
-            );
-          }
-        } catch (_) {}
-      }
-    }
-
-    return _buildFallbackThumbnail(tmpl);
-  }
-
-  Widget _buildFallbackThumbnail(JournalTemplate tmpl) {
-    return Container(
-      color: tmpl.cardBackground,
-      padding: const EdgeInsets.all(12),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(tmpl.icon, size: 36, color: tmpl.themeColor),
-          const SizedBox(height: 8),
-          Text(
-            tmpl.title,
-            textAlign: TextAlign.center,
-            style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.bold, color: tmpl.themeColor),
-          ),
-        ],
       ),
     );
   }

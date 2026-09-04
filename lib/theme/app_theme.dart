@@ -1,5 +1,137 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
+
+@immutable
+class AppColors extends ThemeExtension<AppColors> {
+  final Color surface;
+  final Color surfaceContainer;
+  final Color background;
+  final Color textPrimary;
+  final Color textSecondary;
+  final Color textMuted;
+  final Color divider;
+  final Color tagBg;
+  final Color cardBorder;
+  final Color cardBackground;
+  final Color primary;
+  final Color primaryLight;
+  final Color primaryDark;
+  final Color accentGold;
+
+  const AppColors({
+    required this.surface,
+    required this.surfaceContainer,
+    required this.background,
+    required this.textPrimary,
+    required this.textSecondary,
+    required this.textMuted,
+    required this.divider,
+    required this.tagBg,
+    required this.cardBorder,
+    required this.cardBackground,
+    required this.primary,
+    required this.primaryLight,
+    required this.primaryDark,
+    required this.accentGold,
+  });
+
+  static const light = AppColors(
+    surface: Color(0xFFFFFFFF),
+    surfaceContainer: Color(0xFFF0F2F5),
+    background: Color(0xFFF7F8FA),
+    textPrimary: Color(0xFF1E2024),
+    textSecondary: Color(0xFF757A82),
+    textMuted: Color(0xFF9E9E9E),
+    divider: Color(0xFFEFEFEF),
+    tagBg: Color(0xFFEEF0F3),
+    cardBorder: Color(0xFFE5E7EB),
+    cardBackground: Color(0xFFFFFFFF),
+    primary: Color(0xFFFF6F48),
+    primaryLight: Color(0xFFFFECE5),
+    primaryDark: Color(0xFFE55732),
+    accentGold: Color(0xFFFFB038),
+  );
+
+  static const dark = AppColors(
+    surface: Color(0xFF1C1E22),
+    surfaceContainer: Color(0xFF252830),
+    background: Color(0xFF121316),
+    textPrimary: Color(0xFFF5F6F8),
+    textSecondary: Color(0xFFA0A5AD),
+    textMuted: Color(0xFF70757E),
+    divider: Color(0xFF2C2F36),
+    tagBg: Color(0xFF252830),
+    cardBorder: Color(0xFF2C2F36),
+    cardBackground: Color(0xFF1C1E22),
+    primary: Color(0xFFFF6F48),
+    primaryLight: Color(0xFF3E2822),
+    primaryDark: Color(0xFFE55732),
+    accentGold: Color(0xFFFFB038),
+  );
+
+  @override
+  AppColors copyWith({
+    Color? surface,
+    Color? surfaceContainer,
+    Color? background,
+    Color? textPrimary,
+    Color? textSecondary,
+    Color? textMuted,
+    Color? divider,
+    Color? tagBg,
+    Color? cardBorder,
+    Color? cardBackground,
+    Color? primary,
+    Color? primaryLight,
+    Color? primaryDark,
+    Color? accentGold,
+  }) {
+    return AppColors(
+      surface: surface ?? this.surface,
+      surfaceContainer: surfaceContainer ?? this.surfaceContainer,
+      background: background ?? this.background,
+      textPrimary: textPrimary ?? this.textPrimary,
+      textSecondary: textSecondary ?? this.textSecondary,
+      textMuted: textMuted ?? this.textMuted,
+      divider: divider ?? this.divider,
+      tagBg: tagBg ?? this.tagBg,
+      cardBorder: cardBorder ?? this.cardBorder,
+      cardBackground: cardBackground ?? this.cardBackground,
+      primary: primary ?? this.primary,
+      primaryLight: primaryLight ?? this.primaryLight,
+      primaryDark: primaryDark ?? this.primaryDark,
+      accentGold: accentGold ?? this.accentGold,
+    );
+  }
+
+  @override
+  AppColors lerp(ThemeExtension<AppColors>? other, double t) {
+    if (other is! AppColors) return this;
+    return AppColors(
+      surface: Color.lerp(surface, other.surface, t)!,
+      surfaceContainer: Color.lerp(surfaceContainer, other.surfaceContainer, t)!,
+      background: Color.lerp(background, other.background, t)!,
+      textPrimary: Color.lerp(textPrimary, other.textPrimary, t)!,
+      textSecondary: Color.lerp(textSecondary, other.textSecondary, t)!,
+      textMuted: Color.lerp(textMuted, other.textMuted, t)!,
+      divider: Color.lerp(divider, other.divider, t)!,
+      tagBg: Color.lerp(tagBg, other.tagBg, t)!,
+      cardBorder: Color.lerp(cardBorder, other.cardBorder, t)!,
+      cardBackground: Color.lerp(cardBackground, other.cardBackground, t)!,
+      primary: Color.lerp(primary, other.primary, t)!,
+      primaryLight: Color.lerp(primaryLight, other.primaryLight, t)!,
+      primaryDark: Color.lerp(primaryDark, other.primaryDark, t)!,
+      accentGold: Color.lerp(accentGold, other.accentGold, t)!,
+    );
+  }
+}
+
+extension AppColorsContext on BuildContext {
+  AppColors get c =>
+      Theme.of(this).extension<AppColors>() ??
+      (Theme.of(this).brightness == Brightness.dark ? AppColors.dark : AppColors.light);
+}
 
 class AppTheme {
   // Brand & Accent Colors
@@ -52,6 +184,7 @@ class AppTheme {
       brightness: Brightness.light,
       primaryColor: primaryColor,
       scaffoldBackgroundColor: backgroundLight,
+      extensions: const [AppColors.light],
       colorScheme: const ColorScheme.light(
         primary: primaryColor,
         secondary: primaryDark,
@@ -66,6 +199,11 @@ class AppTheme {
         elevation: 0,
         scrolledUnderElevation: 0,
         centerTitle: false,
+        systemOverlayStyle: SystemUiOverlayStyle(
+          statusBarColor: Colors.transparent,
+          statusBarIconBrightness: Brightness.dark,
+          statusBarBrightness: Brightness.light,
+        ),
         iconTheme: IconThemeData(color: textPrimaryLight),
         titleTextStyle: TextStyle(
           fontSize: 22,
@@ -131,6 +269,7 @@ class AppTheme {
       brightness: Brightness.dark,
       primaryColor: primaryColor,
       scaffoldBackgroundColor: backgroundDark,
+      extensions: const [AppColors.dark],
       colorScheme: const ColorScheme.dark(
         primary: primaryColor,
         secondary: primaryLight,
@@ -145,6 +284,11 @@ class AppTheme {
         elevation: 0,
         scrolledUnderElevation: 0,
         centerTitle: false,
+        systemOverlayStyle: SystemUiOverlayStyle(
+          statusBarColor: Colors.transparent,
+          statusBarIconBrightness: Brightness.light,
+          statusBarBrightness: Brightness.dark,
+        ),
         iconTheme: IconThemeData(color: textPrimaryDark),
       ),
       cardTheme: CardThemeData(

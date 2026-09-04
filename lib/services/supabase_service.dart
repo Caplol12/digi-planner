@@ -50,8 +50,14 @@ class AiConfig {
 }
 
 class SupabaseService {
-  static const String supabaseUrl = 'https://bpkirnkocjlcqotyplgk.supabase.co';
-  static const String supabaseAnonKey = 'sb_publishable_nmc4bWjfOu1haqLivpbjlg_NNMicp8P';
+  static const String supabaseUrl = String.fromEnvironment(
+    'SUPABASE_URL',
+    defaultValue: 'https://bpkirnkocjlcqotyplgk.supabase.co',
+  );
+  static const String supabaseAnonKey = String.fromEnvironment(
+    'SUPABASE_ANON_KEY',
+    defaultValue: 'sb_publishable_nmc4bWjfOu1haqLivpbjlg_NNMicp8P',
+  );
 
   static bool _isInitialized = false;
   static bool get isInitialized => _isInitialized;

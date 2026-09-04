@@ -1,9 +1,9 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:file_picker/file_picker.dart';
-import 'dart:convert';
-import 'dart:io';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:uuid/uuid.dart';
 import '../models/notebook_model.dart';
 import '../models/template_model.dart';
 import '../models/page_style_model.dart';
@@ -14,10 +14,12 @@ import '../widgets/navigation_rail_bar.dart';
 import '../widgets/responsive_layout.dart';
 import '../widgets/favorites_sheet.dart';
 import '../widgets/edit_notebook_dialog.dart';
+import '../widgets/platform_image_helper.dart';
 import 'my_journals_screen.dart';
 import 'notebook_detail_screen.dart';
 import 'choose_page_style_screen.dart';
 import 'templates_screen.dart';
+import 'search_screen.dart';
 import 'pro_template_builder_screen.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../services/notebook_export_service.dart';
@@ -50,18 +52,26 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
   }
 
   Future<void> _loadNotebooks() async {
-    final list = await NotebookStorageService.instance.loadNotebooks();
-    final customTmpls = await NotebookStorageService.instance.loadCustomTemplates();
-    if (mounted) {
-      setState(() {
-        _notebooks = list;
-        for (final ct in customTmpls) {
-          if (!_templates.any((t) => t.id == ct.id)) {
-            _templates.insert(0, ct);
+    try {
+      final list = await NotebookStorageService.instance.loadNotebooks();
+      final customTmpls = await NotebookStorageService.instance.loadCustomTemplates();
+      if (mounted) {
+        setState(() {
+          _notebooks = list;
+          for (final ct in customTmpls) {
+            if (!_templates.any((t) => t.id == ct.id)) {
+              _templates.insert(0, ct);
+            }
           }
-        }
-        _isLoading = false;
-      });
+        });
+      }
+    } catch (_) {
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
     }
   }
 
@@ -75,7 +85,12 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
 
       if (result != null && result.files.isNotEmpty) {
         final bytes = result.files.first.bytes;
-        final fileStr = bytes != null ? utf8.decode(bytes) : await File(result.files.first.path!).readAsString();
+        final rawBytes = bytes ??
+            (result.files.first.path != null
+                ? await readBytesFromPath(result.files.first.path!)
+                : null);
+        if (rawBytes == null) return;
+        final fileStr = utf8.decode(rawBytes);
         final importRes = NotebookExportService.instance.importPackageFromJson(fileStr);
 
         if (importRes.isSuccess) {
@@ -159,6 +174,36 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
         setState(() => _currentIndex = 1); // Switch to Templates Tab
       },
       onTemplateSelected: _openEditorWithTemplate,
+    );
+  }
+
+  void _openSearch() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => Scaffold(
+          backgroundColor: AppTheme.backgroundLight,
+          appBar: AppBar(
+            backgroundColor: Colors.white,
+            elevation: 0.5,
+            title: const Text('جستجو', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 17, color: Color(0xFF2C3437))),
+            iconTheme: const IconThemeData(color: Color(0xFF2C3437)),
+          ),
+          body: SearchScreen(
+            templates: _templates,
+            notebooks: _notebooks,
+            onTemplateSelected: (tmpl) {
+              Navigator.pop(context);
+              _openEditorWithTemplate(tmpl);
+            },
+            onNotebookSelected: (nb) {
+              Navigator.pop(context);
+              _openNotebookDetail(nb);
+            },
+            onFavoriteToggle: _toggleTemplateFavorite,
+          ),
+        ),
+      ),
     );
   }
 
@@ -256,15 +301,14 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
   }
 
   void _duplicateNotebook(NotebookModel notebook) {
-    final duplicated = NotebookModel(
-      id: 'nb_${DateTime.now().millisecondsSinceEpoch}',
+    final duplicated = notebook.copyWith(
+      id: const Uuid().v4(),
       title: '${notebook.title} (کپی)',
-      coverColor: notebook.coverColor,
-      coverImagePath: notebook.coverImagePath,
       pages: notebook.pages
-          .map((p) => p.copyWith(id: 'p_${DateTime.now().millisecondsSinceEpoch}_${p.id}'))
+          .map((p) => p.copyWith(id: const Uuid().v4()))
           .toList(),
-      isFavorite: notebook.isFavorite,
+      createdAt: DateTime.now(),
+      updatedAt: DateTime.now(),
     );
 
     setState(() {
@@ -428,74 +472,78 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
     );
   }
 
-  void _addNotebookToFolder(NotebookModel notebook) {
+  void _addNotebookToFolder(NotebookModel notebook) async {
     final folderCtrl = TextEditingController(text: notebook.folderName ?? '');
     final presetFolders = ['شخصی', 'کاری', 'مطالعه', 'برنامه‌ریزی', 'ایده‌ها'];
 
-    showDialog(
-      context: context,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setDialogState) => AlertDialog(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-          title: const Text('پوشه‌بندی دفترچه', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              TextField(
-                controller: folderCtrl,
-                decoration: const InputDecoration(
-                  labelText: 'نام پوشه',
-                  hintText: 'مثال: کاری، شخصی',
-                  border: OutlineInputBorder(),
+    try {
+      await showDialog(
+        context: context,
+        builder: (context) => StatefulBuilder(
+          builder: (context, setDialogState) => AlertDialog(
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+            title: const Text('پوشه‌بندی دفترچه', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                TextField(
+                  controller: folderCtrl,
+                  decoration: const InputDecoration(
+                    labelText: 'نام پوشه',
+                    hintText: 'مثال: کاری، شخصی',
+                    border: OutlineInputBorder(),
+                  ),
                 ),
-              ),
-              const SizedBox(height: 12),
-              const Text('پوشه‌های پیشنهادی:', style: TextStyle(fontSize: 12, color: Colors.grey)),
-              const SizedBox(height: 8),
-              Wrap(
-                spacing: 6,
-                children: presetFolders.map((f) {
-                  return ActionChip(
-                    label: Text(f, style: const TextStyle(fontSize: 11)),
-                    onPressed: () {
-                      setDialogState(() {
-                        folderCtrl.text = f;
-                      });
-                    },
-                  );
-                }).toList(),
-              ),
-            ],
-          ),
-          actions: [
-            if (notebook.folderName != null && notebook.folderName!.isNotEmpty)
+                const SizedBox(height: 12),
+                const Text('پوشه‌های پیشنهادی:', style: TextStyle(fontSize: 12, color: Colors.grey)),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 6,
+                  children: presetFolders.map((f) {
+                    return ActionChip(
+                      label: Text(f, style: const TextStyle(fontSize: 11)),
+                      onPressed: () {
+                        setDialogState(() {
+                          folderCtrl.text = f;
+                        });
+                      },
+                    );
+                  }).toList(),
+                ),
+              ],
+            ),
+            actions: [
+              if (notebook.folderName != null && notebook.folderName!.isNotEmpty)
+                TextButton(
+                  onPressed: () {
+                    setState(() => notebook.folderName = null);
+                    NotebookStorageService.instance.saveNotebooks(_notebooks);
+                    Navigator.pop(context);
+                  },
+                  child: const Text('حذف از پوشه', style: TextStyle(color: Colors.red)),
+                ),
               TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('انصراف'),
+              ),
+              ElevatedButton(
                 onPressed: () {
-                  setState(() => notebook.folderName = null);
+                  setState(() {
+                    notebook.folderName = folderCtrl.text.trim().isEmpty ? null : folderCtrl.text.trim();
+                  });
                   NotebookStorageService.instance.saveNotebooks(_notebooks);
                   Navigator.pop(context);
                 },
-                child: const Text('حذف از پوشه', style: TextStyle(color: Colors.red)),
+                child: const Text('تایید'),
               ),
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('انصراف'),
-            ),
-            ElevatedButton(
-              onPressed: () {
-                setState(() {
-                  notebook.folderName = folderCtrl.text.trim().isEmpty ? null : folderCtrl.text.trim();
-                });
-                NotebookStorageService.instance.saveNotebooks(_notebooks);
-                Navigator.pop(context);
-              },
-              child: const Text('تایید'),
-            ),
-          ],
+            ],
+          ),
         ),
-      ),
-    );
+      );
+    } finally {
+      folderCtrl.dispose();
+    }
   }
 
   void _openEditorWithTemplate(JournalTemplate template) {
@@ -547,36 +595,16 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
       context,
       MaterialPageRoute(
         builder: (context) => ProTemplateBuilderScreen(
-          onJournalCreated: (newJournal) async {
-            // Refresh custom templates list from storage
-            final customTmpls = await NotebookStorageService.instance.loadCustomTemplates();
-            for (final ct in customTmpls) {
-              if (!_templates.any((t) => t.id == ct.id)) {
-                _templates.insert(0, ct);
-              }
+          onTemplateCreated: (customTemplate, initialPage) async {
+            if (!_templates.any((t) => t.id == customTemplate.id)) {
+              _templates.insert(0, customTemplate);
             }
 
-            String? resolvedTemplateId;
-            try {
-              final decoded = jsonDecode(newJournal.content);
-              if (decoded is Map<String, dynamic> && decoded['templateId'] != null) {
-                resolvedTemplateId = decoded['templateId'] as String?;
-              }
-            } catch (_) {}
-            resolvedTemplateId ??= customTmpls.isNotEmpty ? customTmpls.first.id : null;
-
-            final page = NotebookPageModel.fromJournalContent(
-              id: 'p_${DateTime.now().millisecondsSinceEpoch}',
-              title: newJournal.title,
-              content: newJournal.content,
-              templateId: resolvedTemplateId,
-            );
-
             final newNotebook = NotebookModel(
-              id: 'nb_${DateTime.now().millisecondsSinceEpoch}',
-              title: newJournal.title,
-              coverColor: const Color(0xFFFF7043),
-              pages: [page],
+              id: const Uuid().v4(),
+              title: initialPage.title,
+              coverColor: customTemplate.themeColor,
+              pages: [initialPage],
             );
 
             setState(() {
@@ -866,6 +894,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
           ? null
           : CustomAppBar(
               title: _currentIndex == 1 ? 'قالب‌ها' : 'دفترچه‌ها',
+              onSearchPressed: _openSearch,
               onFavoritesPressed: _openFavoritesSheet,
               onImportPressed: _importJsonPackage,
               onSettingsPressed: _showSettingsDialog,

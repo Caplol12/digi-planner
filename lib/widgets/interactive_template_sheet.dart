@@ -1,7 +1,6 @@
 import 'dart:convert';
-import 'dart:io';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'platform_image_helper.dart';
 import '../models/template_model.dart';
 import '../models/page_style_model.dart';
 import '../models/text_box_model.dart';
@@ -37,6 +36,8 @@ class InteractiveTemplateSheet extends StatelessWidget {
 
   final Function(String id)? onToggleCheckItem;
   final Function(Offset tapPosition) onCanvasTap;
+  final VoidCallback? onInteractionStart;
+  final VoidCallback? onInteractionEnd;
 
   // Natural Note-taking parameters (when pageStyle != null)
   final TextEditingController? noteTitleController;
@@ -84,6 +85,8 @@ class InteractiveTemplateSheet extends StatelessWidget {
     required this.onStickerPositionChanged,
     required this.onStickerScaleChanged,
     required this.onDeleteSticker,
+    this.onInteractionStart,
+    this.onInteractionEnd,
     this.onToggleCheckItem,
     required this.onCanvasTap,
     this.noteTitleController,
@@ -159,20 +162,11 @@ class InteractiveTemplateSheet extends StatelessWidget {
         );
       }
 
-      if (!kIsWeb) {
-        try {
-          final file = File(path);
-          if (file.existsSync()) {
-            return Image.file(
-              file,
-              fit: BoxFit.contain,
-              errorBuilder: (ctx, err, stack) => _buildFallbackSheet(),
-            );
-          }
-        } catch (_) {}
-      }
-
-      return _buildFallbackSheet();
+      return buildPlatformFileImage(
+        filePath: path,
+        fit: BoxFit.contain,
+        errorWidget: _buildFallbackSheet(),
+      );
     }
 
     return _buildFallbackSheet();
@@ -233,19 +227,6 @@ class InteractiveTemplateSheet extends StatelessWidget {
                     ),
                   ),
 
-                  // Dynamic Stickers Layer
-                  ...stickers.map((stk) {
-                    return DraggableStickerWidget(
-                      key: ValueKey(stk.id),
-                      item: stk,
-                      isSelected: stk.id == selectedStickerId,
-                      onTap: () => onSelectSticker(stk.id),
-                      onPositionChanged: (newPos) => onStickerPositionChanged(stk.id, newPos),
-                      onScaleChanged: (newScale) => onStickerScaleChanged(stk.id, newScale),
-                      onDelete: () => onDeleteSticker(stk.id),
-                    );
-                  }),
-
                   // Structured Bounded Writing Zones Layer (Seamless & subtle dashed blue border on focus)
                   if (pageStyle == null)
                     ...textBoxes.map((item) {
@@ -301,6 +282,21 @@ class InteractiveTemplateSheet extends StatelessWidget {
                         ),
                       );
                     }),
+
+                  // Dynamic Stickers & Photos Layer (Rendered on top so photos/stickers are always directly selectable, movable, and resizable)
+                  ...stickers.map((stk) {
+                    return DraggableStickerWidget(
+                      key: ValueKey(stk.id),
+                      item: stk,
+                      isSelected: stk.id == selectedStickerId,
+                      onTap: () => onSelectSticker(stk.id),
+                      onPositionChanged: (newPos) => onStickerPositionChanged(stk.id, newPos),
+                      onScaleChanged: (newScale) => onStickerScaleChanged(stk.id, newScale),
+                      onDelete: () => onDeleteSticker(stk.id),
+                      onInteractionStart: onInteractionStart,
+                      onInteractionEnd: onInteractionEnd,
+                    );
+                  }),
                 ],
               );
             },

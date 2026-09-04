@@ -1,10 +1,22 @@
 import 'dart:convert';
-import 'dart:io';
 import 'package:flutter/foundation.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/notebook_model.dart';
 import '../models/template_model.dart';
+import 'app_logger.dart';
+import 'file_storage_helper.dart';
+
+class NotebookLoadResult {
+  final List<NotebookModel> notebooks;
+  final int failedCount;
+  final bool isFromBackup;
+
+  const NotebookLoadResult({
+    required this.notebooks,
+    this.failedCount = 0,
+    this.isFromBackup = false,
+  });
+}
 
 class NotebookStorageService {
   static final NotebookStorageService instance = NotebookStorageService._internal();
@@ -14,32 +26,18 @@ class NotebookStorageService {
   static const String _templatesFileName = 'custom_templates_data.json';
   static const String _prefsNotebooksKey = 'saved_notebooks_data';
   static const String _prefsTemplatesKey = 'saved_custom_templates_data';
+  static const String _prefsSeededKey = 'has_seeded_initial_notebooks_v1';
 
   List<NotebookModel>? _cachedNotebooks;
   List<JournalTemplate>? _cachedCustomTemplates;
+  int _lastFailedCount = 0;
 
-  Future<File> _getLocalFile() async {
-    if (!kIsWeb && Platform.environment.containsKey('FLUTTER_TEST')) {
-      return File('${Directory.systemTemp.path}/$_fileName');
-    }
-    try {
-      final directory = await getApplicationDocumentsDirectory();
-      return File('${directory.path}/$_fileName');
-    } catch (_) {
-      return File('${Directory.systemTemp.path}/$_fileName');
-    }
-  }
+  int get lastFailedCount => _lastFailedCount;
 
-  Future<File> _getTemplatesFile() async {
-    if (!kIsWeb && Platform.environment.containsKey('FLUTTER_TEST')) {
-      return File('${Directory.systemTemp.path}/$_templatesFileName');
-    }
-    try {
-      final directory = await getApplicationDocumentsDirectory();
-      return File('${directory.path}/$_templatesFileName');
-    } catch (_) {
-      return File('${Directory.systemTemp.path}/$_templatesFileName');
-    }
+  void resetForTesting() {
+    _cachedNotebooks = null;
+    _cachedCustomTemplates = null;
+    _lastFailedCount = 0;
   }
 
   Future<List<NotebookModel>> loadNotebooks() async {
@@ -47,72 +45,95 @@ class NotebookStorageService {
       return _cachedNotebooks!;
     }
 
-    if (!kIsWeb && Platform.environment.containsKey('FLUTTER_TEST')) {
-      _cachedNotebooks = List.from(NotebookModel.sampleNotebooks);
-      return _cachedNotebooks!;
-    }
+    final prefs = await SharedPreferences.getInstance();
+    final bool isAlreadySeeded = prefs.getBool(_prefsSeededKey) ?? false;
 
     if (kIsWeb) {
       try {
-        final prefs = await SharedPreferences.getInstance();
         final content = prefs.getString(_prefsNotebooksKey);
-        if (content != null && content.trim().isNotEmpty) {
+        if (content != null) {
+          if (content.trim().isEmpty) {
+            _cachedNotebooks = [];
+            return [];
+          }
           final decoded = jsonDecode(content) as List;
           final List<NotebookModel> loaded = [];
+          int failed = 0;
           for (final item in decoded) {
             try {
               loaded.add(NotebookModel.fromJson(item as Map<String, dynamic>));
-            } catch (e) {
-              debugPrint('Error parsing notebook item from prefs: $e');
+            } catch (e, st) {
+              failed++;
+              AppLog.e('NotebookStorage', 'Error parsing web notebook: $e', st);
             }
           }
-          if (loaded.isNotEmpty) {
-            _cachedNotebooks = loaded;
-            return loaded;
-          }
+          _lastFailedCount = failed;
+          _cachedNotebooks = loaded;
+          return loaded;
         }
-      } catch (e) {
-        debugPrint('Error loading notebooks from SharedPreferences: $e');
+      } catch (e, st) {
+        AppLog.e('NotebookStorage', 'Error loading notebooks from SharedPreferences', st);
       }
 
-      // Default to sample notebooks on first run on web
+      // First run on Web: seed if not already seeded
+      if (!isAlreadySeeded) {
+        _cachedNotebooks = List.from(NotebookModel.sampleNotebooks);
+        await prefs.setBool(_prefsSeededKey, true);
+        await saveNotebooks(_cachedNotebooks!);
+        return _cachedNotebooks!;
+      }
+
+      _cachedNotebooks = [];
+      return [];
+    }
+
+    // Native file storage via atomic readLocalFile
+    try {
+      final content = await readLocalFile(_fileName);
+      if (content != null) {
+        if (content.trim().isEmpty) {
+          _cachedNotebooks = [];
+          return [];
+        }
+        final decoded = jsonDecode(content) as List;
+        final List<NotebookModel> loaded = [];
+        int failed = 0;
+        for (final item in decoded) {
+          try {
+            loaded.add(NotebookModel.fromJson(item as Map<String, dynamic>));
+          } catch (e, st) {
+            failed++;
+            AppLog.e('NotebookStorage', 'Corrupt notebook item: $e', st);
+          }
+        }
+
+        _lastFailedCount = failed;
+        if (failed > 0) {
+          // Backup corrupt data so user files can be rescued
+          await backupCorruptFile(_fileName, content);
+          AppLog.w('NotebookStorage', '$failed notebooks failed to parse; backed up corrupt content');
+        }
+
+        _cachedNotebooks = loaded;
+        return loaded;
+      }
+    } catch (e, st) {
+      AppLog.e('NotebookStorage', 'Error reading notebooks file', st);
+    }
+
+    // First run on Native: seed if not seeded before
+    if (!isAlreadySeeded) {
       _cachedNotebooks = List.from(NotebookModel.sampleNotebooks);
+      await prefs.setBool(_prefsSeededKey, true);
       await saveNotebooks(_cachedNotebooks!);
       return _cachedNotebooks!;
     }
 
-    // Native file storage
-    try {
-      final file = await _getLocalFile();
-      if (await file.exists()) {
-        final content = await file.readAsString();
-        if (content.trim().isNotEmpty) {
-          final decoded = jsonDecode(content) as List;
-          final List<NotebookModel> loaded = [];
-          for (final item in decoded) {
-            try {
-              loaded.add(NotebookModel.fromJson(item as Map<String, dynamic>));
-            } catch (e) {
-              debugPrint('Error parsing notebook item: $e');
-            }
-          }
-          if (loaded.isNotEmpty) {
-            _cachedNotebooks = loaded;
-            return loaded;
-          }
-        }
-      }
-    } catch (e) {
-      debugPrint('Error loading notebooks from storage: $e');
-    }
-
-    // Default to sample notebooks on first run
-    _cachedNotebooks = List.from(NotebookModel.sampleNotebooks);
-    await saveNotebooks(_cachedNotebooks!);
-    return _cachedNotebooks!;
+    _cachedNotebooks = [];
+    return [];
   }
 
-  Future<void> saveNotebooks(List<NotebookModel> notebooks) async {
+  Future<bool> saveNotebooks(List<NotebookModel> notebooks) async {
     _cachedNotebooks = List.from(notebooks);
 
     if (kIsWeb) {
@@ -120,23 +141,25 @@ class NotebookStorageService {
         final prefs = await SharedPreferences.getInstance();
         final jsonList = notebooks.map((n) => n.toJson()).toList();
         await prefs.setString(_prefsNotebooksKey, jsonEncode(jsonList));
-      } catch (e) {
-        debugPrint('Error saving notebooks to SharedPreferences: $e');
+        return true;
+      } catch (e, st) {
+        AppLog.e('NotebookStorage', 'Error saving notebooks to SharedPreferences', st);
+        return false;
       }
-      return;
     }
 
     try {
-      final file = await _getLocalFile();
       final jsonList = notebooks.map((n) => n.toJson()).toList();
       final content = jsonEncode(jsonList);
-      await file.writeAsString(content);
-    } catch (e) {
-      debugPrint('Error saving notebooks to storage: $e');
+      final success = await writeLocalFile(_fileName, content);
+      return success;
+    } catch (e, st) {
+      AppLog.e('NotebookStorage', 'Error saving notebooks to local storage', st);
+      return false;
     }
   }
 
-  Future<void> saveOrUpdateNotebook(NotebookModel notebook) async {
+  Future<bool> saveOrUpdateNotebook(NotebookModel notebook) async {
     final list = await loadNotebooks();
     final index = list.indexWhere((n) => n.id == notebook.id);
     if (index >= 0) {
@@ -144,24 +167,19 @@ class NotebookStorageService {
     } else {
       list.insert(0, notebook);
     }
-    await saveNotebooks(list);
+    return await saveNotebooks(list);
   }
 
-  Future<void> deleteNotebook(String notebookId) async {
+  Future<bool> deleteNotebook(String notebookId) async {
     final list = await loadNotebooks();
     list.removeWhere((n) => n.id == notebookId);
-    await saveNotebooks(list);
+    return await saveNotebooks(list);
   }
 
   /// Custom Templates Persistence
   Future<List<JournalTemplate>> loadCustomTemplates() async {
     if (_cachedCustomTemplates != null) {
       JournalTemplate.registerTemplates(_cachedCustomTemplates!);
-      return _cachedCustomTemplates!;
-    }
-
-    if (!kIsWeb && Platform.environment.containsKey('FLUTTER_TEST')) {
-      _cachedCustomTemplates = [];
       return _cachedCustomTemplates!;
     }
 
@@ -175,51 +193,48 @@ class NotebookStorageService {
           for (final item in decoded) {
             try {
               loaded.add(JournalTemplate.fromJson(item as Map<String, dynamic>));
-            } catch (e) {
-              debugPrint('Error parsing custom template item from prefs: $e');
+            } catch (e, st) {
+              AppLog.e('NotebookStorage', 'Error parsing custom template: $e', st);
             }
           }
           _cachedCustomTemplates = loaded;
           JournalTemplate.registerTemplates(loaded);
           return loaded;
         }
-      } catch (e) {
-        debugPrint('Error loading custom templates from SharedPreferences: $e');
+      } catch (e, st) {
+        AppLog.e('NotebookStorage', 'Error loading templates from SharedPreferences', st);
       }
 
       _cachedCustomTemplates = [];
       return _cachedCustomTemplates!;
     }
 
-    // Native file storage
+    // Native file storage via readLocalFile
     try {
-      final file = await _getTemplatesFile();
-      if (await file.exists()) {
-        final content = await file.readAsString();
-        if (content.trim().isNotEmpty) {
-          final decoded = jsonDecode(content) as List;
-          final List<JournalTemplate> loaded = [];
-          for (final item in decoded) {
-            try {
-              loaded.add(JournalTemplate.fromJson(item as Map<String, dynamic>));
-            } catch (e) {
-              debugPrint('Error parsing custom template item: $e');
-            }
+      final content = await readLocalFile(_templatesFileName);
+      if (content != null && content.trim().isNotEmpty) {
+        final decoded = jsonDecode(content) as List;
+        final List<JournalTemplate> loaded = [];
+        for (final item in decoded) {
+          try {
+            loaded.add(JournalTemplate.fromJson(item as Map<String, dynamic>));
+          } catch (e, st) {
+            AppLog.e('NotebookStorage', 'Error parsing custom template: $e', st);
           }
-          _cachedCustomTemplates = loaded;
-          JournalTemplate.registerTemplates(loaded);
-          return loaded;
         }
+        _cachedCustomTemplates = loaded;
+        JournalTemplate.registerTemplates(loaded);
+        return loaded;
       }
-    } catch (e) {
-      debugPrint('Error loading custom templates: $e');
+    } catch (e, st) {
+      AppLog.e('NotebookStorage', 'Error loading custom templates', st);
     }
 
     _cachedCustomTemplates = [];
     return _cachedCustomTemplates!;
   }
 
-  Future<void> saveCustomTemplates(List<JournalTemplate> templates) async {
+  Future<bool> saveCustomTemplates(List<JournalTemplate> templates) async {
     _cachedCustomTemplates = List.from(templates);
     JournalTemplate.registerTemplates(templates);
 
@@ -228,22 +243,23 @@ class NotebookStorageService {
         final prefs = await SharedPreferences.getInstance();
         final jsonList = templates.map((t) => t.toJson()).toList();
         await prefs.setString(_prefsTemplatesKey, jsonEncode(jsonList));
-      } catch (e) {
-        debugPrint('Error saving custom templates to SharedPreferences: $e');
+        return true;
+      } catch (e, st) {
+        AppLog.e('NotebookStorage', 'Error saving custom templates', st);
+        return false;
       }
-      return;
     }
 
     try {
-      final file = await _getTemplatesFile();
       final jsonList = templates.map((t) => t.toJson()).toList();
-      await file.writeAsString(jsonEncode(jsonList));
-    } catch (e) {
-      debugPrint('Error saving custom templates: $e');
+      return await writeLocalFile(_templatesFileName, jsonEncode(jsonList));
+    } catch (e, st) {
+      AppLog.e('NotebookStorage', 'Error saving custom templates', st);
+      return false;
     }
   }
 
-  Future<void> saveOrUpdateCustomTemplate(JournalTemplate template) async {
+  Future<bool> saveOrUpdateCustomTemplate(JournalTemplate template) async {
     JournalTemplate.registerTemplate(template);
     final list = await loadCustomTemplates();
     final index = list.indexWhere((t) => t.id == template.id);
@@ -252,12 +268,12 @@ class NotebookStorageService {
     } else {
       list.insert(0, template);
     }
-    await saveCustomTemplates(list);
+    return await saveCustomTemplates(list);
   }
 
-  Future<void> deleteCustomTemplate(String templateId) async {
+  Future<bool> deleteCustomTemplate(String templateId) async {
     final list = await loadCustomTemplates();
     list.removeWhere((t) => t.id == templateId);
-    await saveCustomTemplates(list);
+    return await saveCustomTemplates(list);
   }
 }

@@ -1,12 +1,15 @@
 import 'dart:convert';
-import 'dart:io' show Directory, File;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:intl/intl.dart';
-import 'package:path_provider/path_provider.dart';
+import 'package:pdf/pdf.dart';
+import 'package:pdf/widgets.dart' as pw;
+import 'package:printing/printing.dart';
 import 'package:share_plus/share_plus.dart';
+import 'app_logger.dart';
 import 'export_download_helper.dart';
+import 'file_storage_helper.dart';
 import 'notebook_storage_service.dart';
+import 'persian_date_helper.dart';
 import '../models/notebook_model.dart';
 import '../models/template_model.dart';
 import '../models/ai_layout_model.dart';
@@ -75,6 +78,8 @@ class NotebookExportService {
   static final NotebookExportService instance = NotebookExportService._();
   NotebookExportService._();
 
+  static const int currentSchemaVersion = 1;
+
   String? _activeWidgetNotebookId;
 
   String? get activeWidgetNotebookId => _activeWidgetNotebookId;
@@ -101,13 +106,10 @@ class NotebookExportService {
         );
       }
 
-      // Mobile platforms: Android / iOS (Save temporary and trigger native Share Sheet)
+      // Mobile platforms: Android / iOS (via pure cross-platform XFile.fromData and SharePlus)
       if (defaultTargetPlatform == TargetPlatform.android || defaultTargetPlatform == TargetPlatform.iOS) {
-        final tempDir = await getTemporaryDirectory();
-        final file = File('${tempDir.path}/$fileName');
-        await file.writeAsString(content);
-
-        final xfile = XFile(file.path, mimeType: mimeType, name: fileName);
+        final bytes = Uint8List.fromList(utf8.encode(content));
+        final xfile = XFile.fromData(bytes, mimeType: mimeType, name: fileName);
         await SharePlus.instance.share(
           ShareParams(
             files: [xfile],
@@ -119,30 +121,20 @@ class NotebookExportService {
         return ExportResult(
           isSuccess: true,
           fileName: fileName,
-          filePath: file.path,
           isShared: true,
           userMessage: 'فایل «$fileName» آماده اشتراک‌گذاری یا ذخیره شد.',
         );
       }
 
-      // Desktop platforms: Windows, macOS, Linux
-      Directory? baseDir;
-      try {
-        baseDir = await getDownloadsDirectory();
-      } catch (_) {}
-      baseDir ??= await getApplicationDocumentsDirectory();
-
-      final file = File('${baseDir.path}/$fileName');
-      await file.writeAsString(content);
-
+      // Desktop platforms: Save via cross-platform local write
+      final success = await writeLocalFile(fileName, content);
       return ExportResult(
-        isSuccess: true,
+        isSuccess: success,
         fileName: fileName,
-        filePath: file.path,
-        userMessage: 'فایل «$fileName» ذخیره شد:\n${file.path}',
+        userMessage: success ? 'فایل «$fileName» در پوشه برنامه ذخیره شد.' : 'خطا در ذخیره فایل در دیسک.',
       );
-    } catch (e) {
-      debugPrint('Export error: $e');
+    } catch (e, st) {
+      AppLog.e('ExportService', 'Export error: $e', st);
       return ExportResult.error('خطا در صدور فایل: $e');
     }
   }
@@ -153,6 +145,7 @@ class NotebookExportService {
     final fileName = 'PlanWiz_Template_${safeTitle}_${DateTime.now().millisecondsSinceEpoch}.json';
     final payload = {
       'exportType': 'template',
+      'schemaVersion': currentSchemaVersion,
       'appVersion': '1.0',
       'exportedAt': DateTime.now().toIso8601String(),
       'template': template.toJson(),
@@ -167,6 +160,7 @@ class NotebookExportService {
     final fileName = 'PlanWiz_Page_${safeTitle}_${DateTime.now().millisecondsSinceEpoch}.json';
     final payload = {
       'exportType': 'page',
+      'schemaVersion': currentSchemaVersion,
       'appVersion': '1.0',
       'exportedAt': DateTime.now().toIso8601String(),
       'page': page.toJson(),
@@ -196,6 +190,7 @@ class NotebookExportService {
 
     final payload = {
       'exportType': 'notebook',
+      'schemaVersion': currentSchemaVersion,
       'appVersion': '1.0',
       'exportedAt': DateTime.now().toIso8601String(),
       'notebook': notebook.toJson(),
@@ -211,6 +206,7 @@ class NotebookExportService {
     final fileName = 'PlanWiz_AILayout_${safeTitle}_${DateTime.now().millisecondsSinceEpoch}.json';
     final payload = {
       'exportType': 'ai_layout',
+      'schemaVersion': currentSchemaVersion,
       'appVersion': '1.0',
       'exportedAt': DateTime.now().toIso8601String(),
       'aiLayout': layoutResult.toJson(),
@@ -230,6 +226,7 @@ class NotebookExportService {
     final fileName = 'PlanWiz_Bundle_${safeTitle}_${DateTime.now().millisecondsSinceEpoch}.json';
     final payload = {
       'exportType': 'combined_bundle',
+      'schemaVersion': currentSchemaVersion,
       'appVersion': '1.0',
       'exportedAt': DateTime.now().toIso8601String(),
       'notebooks': notebooks?.map((n) => n.toJson()).toList() ?? [],
@@ -240,7 +237,7 @@ class NotebookExportService {
     return await exportDataSmart(content: jsonStr, fileName: fileName, shareSubject: bundleTitle);
   }
 
-  /// Parse and import JSON package string into appropriate domain objects
+  /// Parse and import JSON package string into appropriate domain objects with schema validation
   ImportResult importPackageFromJson(String jsonContent) {
     try {
       if (jsonContent.trim().isEmpty) {
@@ -257,7 +254,9 @@ class NotebookExportService {
             if (item is Map<String, dynamic>) {
               loadedNotebooks.add(NotebookModel.fromJson(item));
             }
-          } catch (_) {}
+          } catch (e) {
+            AppLog.e('ExportService', 'Corrupt notebook in list import: $e');
+          }
         }
         if (loadedNotebooks.isNotEmpty) {
           return ImportResult(
@@ -268,8 +267,13 @@ class NotebookExportService {
         }
       }
 
-      // 2. Map Payload Format
+      // 2. Map Payload Format with schema check
       if (decoded is Map<String, dynamic>) {
+        final schemaVer = decoded['schemaVersion'] as int? ?? 1;
+        if (schemaVer > currentSchemaVersion) {
+          return ImportResult.error('این فایل با نسخه جدیدتری از برنامه ساخته شده و پشتیبانی نمی‌شود.');
+        }
+
         final String exportType = decoded['exportType'] as String? ?? '';
 
         // Template package
@@ -299,30 +303,7 @@ class NotebookExportService {
             type: PackageType.page,
             page: page,
             template: associatedTmpl,
-            message: 'برگه «${page.title}» با موفقیت وارد شد.',
-          );
-        }
-
-        // Notebook package
-        if (exportType == 'notebook' || decoded.containsKey('notebook')) {
-          final nMap = decoded['notebook'] as Map<String, dynamic>? ?? decoded;
-          final notebook = NotebookModel.fromJson(nMap);
-          final List<JournalTemplate> loadedTemplates = [];
-          if (decoded['templates'] != null && decoded['templates'] is List) {
-            for (final t in decoded['templates']) {
-              try {
-                final tmpl = JournalTemplate.fromJson(t as Map<String, dynamic>);
-                loadedTemplates.add(tmpl);
-                JournalTemplate.registerTemplate(tmpl);
-                NotebookStorageService.instance.saveOrUpdateCustomTemplate(tmpl);
-              } catch (_) {}
-            }
-          }
-          return ImportResult(
-            type: PackageType.notebook,
-            notebook: notebook,
-            templates: loadedTemplates.isNotEmpty ? loadedTemplates : null,
-            message: 'دفترچه «${notebook.title}» با ${notebook.pages.length} برگه بازیابی شد.',
+            message: 'برگه «${page.title}» با موفقیت بازیابی شد.',
           );
         }
 
@@ -333,113 +314,207 @@ class NotebookExportService {
           return ImportResult(
             type: PackageType.aiLayout,
             aiLayout: aiLayout,
-            message: 'چیدمان هوشمند «${aiLayout.title}» با ${aiLayout.detectedBoxes.length} کادر بازیابی شد.',
+            message: 'چیدمان هوش مصنوعی «${aiLayout.title}» بازیابی شد.',
+          );
+        }
+
+        // Notebook package
+        if (exportType == 'notebook' || decoded.containsKey('notebook')) {
+          final nbMap = decoded['notebook'] as Map<String, dynamic>? ?? decoded;
+          final notebook = NotebookModel.fromJson(nbMap);
+
+          // Register any bundled custom templates
+          if (decoded['templates'] != null && decoded['templates'] is List) {
+            for (final tJson in decoded['templates']) {
+              try {
+                final tmpl = JournalTemplate.fromJson(tJson as Map<String, dynamic>);
+                JournalTemplate.registerTemplate(tmpl);
+                NotebookStorageService.instance.saveOrUpdateCustomTemplate(tmpl);
+              } catch (_) {}
+            }
+          }
+
+          return ImportResult(
+            type: PackageType.notebook,
+            notebook: notebook,
+            message: 'دفترچه «${notebook.title}» با موفقیت بازیابی شد.',
           );
         }
 
         // Combined Bundle package
-        if (exportType == 'combined_bundle' || decoded.containsKey('notebooks') || decoded.containsKey('templates')) {
-          final loadedNotebooks = (decoded['notebooks'] as List? ?? [])
-              .map((n) => NotebookModel.fromJson(n as Map<String, dynamic>))
-              .toList();
-          final loadedTemplates = (decoded['templates'] as List? ?? [])
-              .map((t) => JournalTemplate.fromJson(t as Map<String, dynamic>))
-              .toList();
-          final loadedPages = (decoded['pages'] as List? ?? [])
-              .map((p) => NotebookPageModel.fromJson(p as Map<String, dynamic>))
-              .toList();
+        if (exportType == 'combined_bundle' || decoded.containsKey('notebooks')) {
+          final List<NotebookModel> loadedNbs = [];
+          final List<JournalTemplate> loadedTmpls = [];
+          final List<NotebookPageModel> loadedPgs = [];
+
+          if (decoded['templates'] is List) {
+            for (final item in decoded['templates']) {
+              try {
+                final t = JournalTemplate.fromJson(item as Map<String, dynamic>);
+                JournalTemplate.registerTemplate(t);
+                NotebookStorageService.instance.saveOrUpdateCustomTemplate(t);
+                loadedTmpls.add(t);
+              } catch (_) {}
+            }
+          }
+
+          if (decoded['notebooks'] is List) {
+            for (final item in decoded['notebooks']) {
+              try {
+                loadedNbs.add(NotebookModel.fromJson(item as Map<String, dynamic>));
+              } catch (_) {}
+            }
+          }
+
+          if (decoded['pages'] is List) {
+            for (final item in decoded['pages']) {
+              try {
+                loadedPgs.add(NotebookPageModel.fromJson(item as Map<String, dynamic>));
+              } catch (_) {}
+            }
+          }
 
           return ImportResult(
             type: PackageType.combinedBundle,
-            notebooks: loadedNotebooks,
-            templates: loadedTemplates,
-            pages: loadedPages,
-            message: 'بسته ترکیبی شامل ${loadedNotebooks.length} دفترچه و ${loadedTemplates.length} قالب بازیابی شد.',
+            notebooks: loadedNbs,
+            templates: loadedTmpls,
+            pages: loadedPgs,
+            message: 'بسته ترکیبی شامل ${loadedNbs.length} دفترچه و ${loadedTmpls.length} قالب بازیابی شد.',
           );
         }
-
-        // Fallback: try parsing as notebook or template directly
-        try {
-          if (decoded.containsKey('pages') && decoded.containsKey('title')) {
-            final notebook = NotebookModel.fromJson(decoded);
-            return ImportResult(
-              type: PackageType.notebook,
-              notebook: notebook,
-              message: 'دفترچه «${notebook.title}» بازیابی شد.',
-            );
-          }
-        } catch (_) {}
       }
-    } catch (e) {
-      debugPrint('Error parsing JSON package: $e');
-      return ImportResult.error('فرمت ساختار فایل JSON معتبر نمی‌باشد: $e');
-    }
 
-    return ImportResult.error('ساختار داده‌ای شناخته‌شده برای وارد کردن پیدا نشد.');
+      return ImportResult.error('فرمت فایل نامعتبر یا ناشناخته است.');
+    } catch (e, st) {
+      AppLog.e('ExportService', 'Import parse error: $e', st);
+      return ImportResult.error('خطا در خواندن محتوای فایل: $e');
+    }
   }
 
-  /// Format notebook into clean Persian/English Markdown text for sharing or clipboard
-  String formatNotebookAsText(NotebookModel notebook) {
-    final dateFormat = DateFormat('yyyy/MM/dd HH:mm');
-    final buffer = StringBuffer();
-    buffer.writeln('# 📓 ${notebook.title}');
-    buffer.writeln('📅 تاریخ ویرایش: ${dateFormat.format(notebook.updatedAt)}');
-    if (notebook.folderName != null && notebook.folderName!.isNotEmpty) {
-      buffer.writeln('📁 پوشه: ${notebook.folderName}');
+  /// Print or export direct PDF document with Persian typography
+  Future<bool> printOrShareNotebookPdf(NotebookModel notebook, {bool isDirectPrint = true}) async {
+    try {
+      final doc = pw.Document();
+      final font = await PdfGoogleFonts.vazirmatnRegular();
+      final boldFont = await PdfGoogleFonts.vazirmatnBold();
+
+      for (int i = 0; i < notebook.pages.length; i++) {
+        final page = notebook.pages[i];
+        doc.addPage(
+          pw.Page(
+            pageFormat: PdfPageFormat.a4,
+            textDirection: pw.TextDirection.rtl,
+            theme: pw.ThemeData.withFont(base: font, bold: boldFont),
+            build: (pw.Context context) {
+              return pw.Column(
+                crossAxisAlignment: pw.CrossAxisAlignment.start,
+                children: [
+                  pw.Row(
+                    mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                    children: [
+                      pw.Text(notebook.title, style: pw.TextStyle(font: boldFont, fontSize: 18, color: PdfColors.deepOrange)),
+                      pw.Text(page.title, style: pw.TextStyle(font: font, fontSize: 12, color: PdfColors.grey700)),
+                    ],
+                  ),
+                  pw.Divider(color: PdfColors.grey300),
+                  pw.SizedBox(height: 10),
+                  if (page.noteTitle.isNotEmpty)
+                    pw.Text(page.noteTitle, style: pw.TextStyle(font: boldFont, fontSize: 14)),
+                  if (page.noteBody.isNotEmpty)
+                    pw.Paragraph(text: page.noteBody, style: pw.TextStyle(font: font, fontSize: 12)),
+                  if (page.cueText.isNotEmpty)
+                    pw.Text('نکات کلیدی: ${page.cueText}', style: pw.TextStyle(font: font, fontSize: 10, color: PdfColors.blueGrey800)),
+                  if (page.summaryText.isNotEmpty)
+                    pw.Text('خلاصه: ${page.summaryText}', style: pw.TextStyle(font: font, fontSize: 10, color: PdfColors.blueGrey800)),
+                  ...page.textBoxes.where((b) => b.text.trim().isNotEmpty).map(
+                    (b) => pw.Bullet(text: b.text, style: pw.TextStyle(font: font, fontSize: 11)),
+                  ),
+                  ...page.checkItems.map(
+                    (c) => pw.Text('${c.isChecked ? "[x]" : "[ ]"} ${c.label}', style: pw.TextStyle(font: font, fontSize: 11)),
+                  ),
+                ],
+              );
+            },
+          ),
+        );
+      }
+
+      if (isDirectPrint) {
+        await Printing.layoutPdf(onLayout: (format) async => doc.save(), name: notebook.title);
+      } else {
+        await Printing.sharePdf(bytes: await doc.save(), filename: '${notebook.title}.pdf');
+      }
+      return true;
+    } catch (e, st) {
+      AppLog.e('ExportService', 'Failed to generate/print PDF', st);
+      return false;
     }
-    buffer.writeln('📄 تعداد برگه‌ها: ${notebook.pages.length}');
-    buffer.writeln('\n---');
+  }
+
+  /// Format complete notebook as clean text
+  String formatNotebookAsText(NotebookModel notebook) {
+    final buffer = StringBuffer();
+    buffer.writeln('========================================');
+    buffer.writeln('📓 دفترچه: ${notebook.title}');
+    buffer.writeln('📅 تاریخ ویرایش: ${notebook.updatedAt.toPersianDateTimeStr()}');
+    buffer.writeln('📄 تعداد برگه: ${notebook.pages.length}');
+    buffer.writeln('========================================\n');
 
     for (int i = 0; i < notebook.pages.length; i++) {
       final page = notebook.pages[i];
-      buffer.writeln('\n## برگه ${i + 1}: ${page.title}');
+      buffer.writeln('--- برگه ${i + 1}: ${page.title} ---');
       if (page.scheduledDate != null) {
-        buffer.writeln('⏰ تاریخ زمان‌بندی: ${dateFormat.format(page.scheduledDate!)}');
+        buffer.writeln('⏰ تاریخ زمان‌بندی: ${page.scheduledDate!.toPersianDateTimeStr()}');
       }
       if (page.noteTitle.isNotEmpty) {
-        buffer.writeln('### ${page.noteTitle}');
+        buffer.writeln('📌 عنوان: ${page.noteTitle}');
       }
       if (page.noteBody.isNotEmpty) {
-        buffer.writeln(page.noteBody);
+        buffer.writeln('\n${page.noteBody}\n');
       }
       if (page.cueText.isNotEmpty) {
-        buffer.writeln('📌 نکات کلیدی (Cues): ${page.cueText}');
+        buffer.writeln('💡 نکات کلیدی: ${page.cueText}');
       }
       if (page.summaryText.isNotEmpty) {
-        buffer.writeln('📝 خلاصه (Summary): ${page.summaryText}');
+        buffer.writeln('📝 خلاصه: ${page.summaryText}');
       }
       if (page.textBoxes.isNotEmpty) {
-        buffer.writeln('✍️ یادداشت‌های تکست‌باکس:');
-        for (final box in page.textBoxes) {
-          buffer.writeln('- ${box.text}');
+        buffer.writeln('\n🔲 جعبه‌های متنی:');
+        for (final b in page.textBoxes) {
+          if (b.text.trim().isNotEmpty) {
+            buffer.writeln('  • ${b.text}');
+          }
         }
       }
       if (page.checkItems.isNotEmpty) {
-        buffer.writeln('☑️ چک‌باکس‌ها و کارها:');
-        for (final chk in page.checkItems) {
-          final mark = chk.isChecked ? '[✓]' : '[ ]';
-          buffer.writeln('- $mark ${chk.label.isNotEmpty ? chk.label : 'آیتم'}');
+        buffer.writeln('\n☑️ چک‌لیست:');
+        for (final c in page.checkItems) {
+          buffer.writeln('  ${c.isChecked ? "[x]" : "[ ]"} ${c.label}');
         }
       }
-      buffer.writeln('\n---');
+      if (page.stickers.isNotEmpty) {
+        buffer.writeln('\n🎨 استیکرها: ${page.stickers.map((s) => s.content).join(" ")}');
+      }
+      if (page.drawingStrokes.isNotEmpty) {
+        buffer.writeln('✏️ دست‌نویس: شامل ${page.drawingStrokes.length} خط دست‌نویس');
+      }
+      buffer.writeln('\n');
     }
 
-    buffer.writeln('\nایجاد شده با اپلیکیشن PlanWiz ✨');
     return buffer.toString();
   }
 
-  /// Generate a clean printable HTML document for Save PDF / Print
+  /// Generate a clean printable HTML document for Save PDF / Print with full handwriting & stickers
   Future<ExportResult> exportHtmlPrintableDocument(NotebookModel notebook) async {
     final safeTitle = notebook.title.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
     final fileName = 'PlanWiz_Print_${safeTitle}_${DateTime.now().millisecondsSinceEpoch}.html';
 
-    final dateFormat = DateFormat('yyyy/MM/dd HH:mm');
     final buffer = StringBuffer();
     buffer.writeln('''<!DOCTYPE html>
 <html lang="fa" dir="rtl">
 <head>
   <meta charset="UTF-8">
-  <title>${notebook.title} - PlanWiz</title>
+  <title>${_escapeHtml(notebook.title)} - PlanWiz</title>
   <style>
     body { font-family: system-ui, -apple-system, sans-serif; background: #f8fafc; color: #1e293b; padding: 30px; margin: 0; }
     .notebook-card { max-width: 800px; margin: 0 auto; background: white; border-radius: 16px; box-shadow: 0 4px 20px rgba(0,0,0,0.08); padding: 36px; }
@@ -459,9 +534,9 @@ class NotebookExportService {
 <body>
   <div class="notebook-card">
     <div class="header">
-      <h1 class="title">${notebook.title}</h1>
+      <h1 class="title">${_escapeHtml(notebook.title)}</h1>
       <div class="meta">
-        <span>تاریخ: ${dateFormat.format(notebook.updatedAt)}</span> | 
+        <span>تاریخ: ${notebook.updatedAt.toPersianDateTimeStr()}</span> | 
         <span class="badge">${notebook.pages.length} برگه</span>
       </div>
     </div>
@@ -477,13 +552,6 @@ class NotebookExportService {
         } else if (tmpl.imageAsset != null && tmpl.imageAsset!.isNotEmpty) {
           if (tmpl.imageAsset!.startsWith('data:') || tmpl.imageAsset!.startsWith('http')) {
             imageSrc = tmpl.imageAsset;
-          } else if (!kIsWeb) {
-            try {
-              final f = File(tmpl.imageAsset!);
-              if (f.existsSync()) {
-                imageSrc = 'data:image/jpeg;base64,${base64Encode(f.readAsBytesSync())}';
-              }
-            } catch (_) {}
           }
         }
       }
@@ -494,19 +562,19 @@ class NotebookExportService {
 ''');
 
       if (imageSrc != null && tmpl != null) {
-        // Visual Template Sheet with layers on top
         final double canvasAspect = tmpl.aspectRatio > 0 ? tmpl.aspectRatio : 0.67;
         buffer.writeln('''
       <div style="position: relative; width: 100%; max-width: 580px; margin: 0 auto 16px; aspect-ratio: $canvasAspect; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 16px rgba(0,0,0,0.1); background: #ffffff;">
         <img src="$imageSrc" style="width: 100%; height: 100%; object-fit: contain; position: absolute; top: 0; left: 0; display: block;" />
 ''');
+        // Render text boxes
         for (final box in page.textBoxes) {
           final double leftPct = (box.normalizedX ?? (box.position.dx / 420.0)).clamp(0.0, 1.0) * 100;
           final double topPct = (box.normalizedY ?? (box.position.dy / 630.0)).clamp(0.0, 1.0) * 100;
           final double widthPct = (box.normalizedWidth ?? (box.width / 420.0)).clamp(0.05, 1.0) * 100;
           final String colorHex = '#${(box.inkColor.toARGB32() & 0x00FFFFFF).toRadixString(16).padLeft(6, '0')}';
           final String align = box.textAlign == TextAlign.left ? 'left' : (box.textAlign == TextAlign.center ? 'center' : 'right');
-          final String txt = box.text.isNotEmpty ? box.text : (box.hintText.isNotEmpty ? '' : '');
+          final String txt = box.text.isNotEmpty ? box.text : '';
           if (txt.isNotEmpty) {
             buffer.writeln('''
         <div style="position: absolute; left: ${leftPct.toStringAsFixed(2)}%; top: ${topPct.toStringAsFixed(2)}%; width: ${widthPct.toStringAsFixed(2)}%; font-size: ${box.fontSize}px; color: $colorHex; text-align: $align; font-weight: ${box.isBold ? 'bold' : 'normal'}; line-height: 1.45; white-space: pre-wrap; word-break: break-word; pointer-events: none;">${_escapeHtml(txt)}</div>
@@ -514,12 +582,45 @@ class NotebookExportService {
           }
         }
 
+        // Render check items
         for (final chk in page.checkItems) {
           final double leftPct = chk.normalizedX.clamp(0.0, 1.0) * 100;
           final double topPct = chk.normalizedY.clamp(0.0, 1.0) * 100;
           buffer.writeln('''
         <div style="position: absolute; left: ${leftPct.toStringAsFixed(2)}%; top: ${topPct.toStringAsFixed(2)}%; font-size: 13px; color: #1e293b; font-weight: 500; pointer-events: none;">${chk.isChecked ? '☑' : '☐'} ${_escapeHtml(chk.label)}</div>
 ''');
+        }
+
+        // Render stickers (Issue 12)
+        for (final st in page.stickers) {
+          final double left = st.position.dx;
+          final double top = st.position.dy;
+          final double sz = 56.0 * st.scale;
+          if (st.imagePath != null && st.imagePath!.isNotEmpty) {
+            buffer.writeln('''
+        <img src="${st.imagePath}" style="position: absolute; left: ${left}px; top: ${top}px; width: ${sz}px; height: ${sz}px; transform: rotate(${st.rotation}rad); pointer-events: none;" />
+''');
+          } else {
+            buffer.writeln('''
+        <div style="position: absolute; left: ${left}px; top: ${top}px; font-size: ${32 * st.scale}px; transform: rotate(${st.rotation}rad); pointer-events: none;">${st.content}</div>
+''');
+          }
+        }
+
+        // Render handwriting strokes as SVG overlay (Issue 12)
+        if (page.drawingStrokes.isNotEmpty) {
+          buffer.writeln('''
+        <svg style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none;">
+''');
+          for (final stroke in page.drawingStrokes) {
+            final pointsStr = stroke.points.map((p) => '${p.x.toStringAsFixed(1)},${p.y.toStringAsFixed(1)}').join(' ');
+            final strokeHex = '#${(stroke.color.toARGB32() & 0x00FFFFFF).toRadixString(16).padLeft(6, '0')}';
+            final opacity = stroke.isHighlighter ? 0.35 : 1.0;
+            buffer.writeln('''
+          <polyline points="$pointsStr" stroke="$strokeHex" stroke-width="${stroke.strokeWidth}" stroke-opacity="$opacity" fill="none" stroke-linecap="round" stroke-linejoin="round" />
+''');
+          }
+          buffer.writeln('        </svg>');
         }
 
         buffer.writeln('      </div>');

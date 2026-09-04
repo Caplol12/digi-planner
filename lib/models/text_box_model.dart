@@ -1,8 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:uuid/uuid.dart';
 
 class TextBoxItem {
-  static int _counter = 0;
-
   final String id;
   String text;
   String hintText;
@@ -45,6 +44,17 @@ class TextBoxItem {
     this.normalizedHeight,
   });
 
+  static TextAlign _parseTextAlign(dynamic val) {
+    if (val is String) {
+      try {
+        return TextAlign.values.byName(val);
+      } catch (_) {}
+    } else if (val is int && val >= 0 && val < TextAlign.values.length) {
+      return TextAlign.values[val];
+    }
+    return TextAlign.right;
+  }
+
   Map<String, dynamic> toJson() => {
         'id': id,
         'text': text,
@@ -56,7 +66,7 @@ class TextBoxItem {
         'fontSize': fontSize,
         'fontName': fontName,
         'color': inkColor.toARGB32(),
-        'textAlign': textAlign.index,
+        'textAlign': textAlign.name,
         'isBold': isBold,
         'isItalic': isItalic,
         'highlightColor': highlightColor?.toARGB32(),
@@ -69,7 +79,7 @@ class TextBoxItem {
   factory TextBoxItem.fromJson(Map<String, dynamic> json) => TextBoxItem(
         id: (json['id']?.toString().isNotEmpty == true)
             ? json['id'].toString()
-            : 'tb_${DateTime.now().millisecondsSinceEpoch}_${++_counter}',
+            : 'tb_${const Uuid().v4()}',
         text: json['text'] ?? '',
         hintText: json['hintText'] ?? '',
         position: Offset(json['dx']?.toDouble() ?? 50.0, json['dy']?.toDouble() ?? 50.0),
@@ -78,7 +88,7 @@ class TextBoxItem {
         fontSize: json['fontSize']?.toDouble() ?? 13.0,
         fontName: json['fontName'] ?? 'Vazirmatn',
         inkColor: Color(json['color'] ?? 0xFF1E2024),
-        textAlign: json['textAlign'] != null ? TextAlign.values[json['textAlign']] : TextAlign.right,
+        textAlign: _parseTextAlign(json['textAlign']),
         isBold: json['isBold'] ?? false,
         isItalic: json['isItalic'] ?? false,
         highlightColor: json['highlightColor'] != null ? Color(json['highlightColor']) : null,

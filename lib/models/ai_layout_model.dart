@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import 'package:uuid/uuid.dart';
 import 'text_box_model.dart';
 import 'check_item_model.dart';
 
@@ -78,13 +79,11 @@ class DetectedBox {
     }
   }
 
-  static int _boxCounter = 0;
-
   TextBoxItem toTextBoxItem(Size canvasSize) {
     final dx = normalizedX * canvasSize.width;
     final dy = normalizedY * canvasSize.height;
-    final width = (normalizedWidth * canvasSize.width).clamp(60.0, canvasSize.width);
-    final height = (normalizedHeight * canvasSize.height).clamp(34.0, canvasSize.height);
+    final width = (normalizedWidth * canvasSize.width).clamp(30.0, canvasSize.width);
+    final height = (normalizedHeight * canvasSize.height).clamp(20.0, canvasSize.height);
 
     final hint = placeholderText.isNotEmpty
         ? placeholderText
@@ -110,6 +109,17 @@ class DetectedBox {
     );
   }
 
+  static TextAlign _parseTextAlign(dynamic val) {
+    if (val is String) {
+      try {
+        return TextAlign.values.byName(val);
+      } catch (_) {}
+    } else if (val is int && val >= 0 && val < TextAlign.values.length) {
+      return TextAlign.values[val];
+    }
+    return TextAlign.right;
+  }
+
   Map<String, dynamic> toJson() => {
         'id': id,
         'label': label,
@@ -126,7 +136,7 @@ class DetectedBox {
         'fontSize': fontSize,
         'fontName': fontName,
         'inkColor': inkColor.toARGB32(),
-        'textAlign': textAlign.index,
+        'textAlign': textAlign.name,
         'isBold': isBold,
       };
 
@@ -140,7 +150,7 @@ class DetectedBox {
     final rawId = json['id']?.toString().trim();
     final effectiveId = (rawId != null && rawId.isNotEmpty)
         ? rawId
-        : 'box_${DateTime.now().millisecondsSinceEpoch}_${++_boxCounter}';
+        : 'box_${const Uuid().v4()}';
 
     return DetectedBox(
       id: effectiveId,
@@ -158,7 +168,7 @@ class DetectedBox {
       fontSize: (json['fontSize'] as num?)?.toDouble() ?? 13.0,
       fontName: json['fontName'] as String? ?? 'Vazirmatn',
       inkColor: Color((json['inkColor'] as int?) ?? 0xFF1E2024),
-      textAlign: json['textAlign'] != null ? TextAlign.values[json['textAlign']] : TextAlign.right,
+      textAlign: _parseTextAlign(json['textAlign']),
       isBold: json['isBold'] as bool? ?? false,
     );
   }

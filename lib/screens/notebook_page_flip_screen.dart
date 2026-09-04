@@ -1,8 +1,10 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:intl/intl.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:uuid/uuid.dart';
 import '../models/notebook_model.dart';
 import '../models/template_model.dart';
 import '../models/page_style_model.dart';
@@ -10,11 +12,14 @@ import '../models/text_box_model.dart';
 import '../models/sticker_model.dart';
 import '../models/drawing_stroke_model.dart';
 import '../services/notebook_storage_service.dart';
+import '../services/persian_date_helper.dart';
 import '../widgets/interactive_template_sheet.dart';
 import '../widgets/floating_editor_dock.dart';
 import '../widgets/text_formatting_toolbar.dart';
 import '../widgets/stickers_sheet.dart';
 import '../widgets/color_picker_sheet.dart';
+import '../widgets/platform_image_helper.dart';
+import '../theme/app_fonts.dart';
 import 'choose_page_style_screen.dart';
 
 class NotebookPageFlipScreen extends StatefulWidget {
@@ -61,10 +66,25 @@ class _NotebookPageFlipScreenState extends State<NotebookPageFlipScreen> {
   bool _isEraser = false;
   double _penStrokeWidth = 3.0;
   DrawingStroke? _currentStroke;
+  bool _isInteractingWithElement = false;
 
-  // Undo / Redo History Stacks
-  final List<NotebookPageModel> _undoStack = [];
-  final List<NotebookPageModel> _redoStack = [];
+  // Undo / Redo History Stacks per Page ID
+  final Map<String, List<NotebookPageModel>> _pageUndoStacks = {};
+  final Map<String, List<NotebookPageModel>> _pageRedoStacks = {};
+  bool _isRestoring = false;
+  Timer? _saveTimer;
+
+  List<NotebookPageModel> get _currentUndoStack {
+    if (_currentPageIndex >= _notebook.pages.length) return [];
+    final pageId = _notebook.pages[_currentPageIndex].id;
+    return _pageUndoStacks.putIfAbsent(pageId, () => []);
+  }
+
+  List<NotebookPageModel> get _currentRedoStack {
+    if (_currentPageIndex >= _notebook.pages.length) return [];
+    final pageId = _notebook.pages[_currentPageIndex].id;
+    return _pageRedoStacks.putIfAbsent(pageId, () => []);
+  }
 
   @override
   void initState() {
@@ -83,17 +103,17 @@ class _NotebookPageFlipScreenState extends State<NotebookPageFlipScreen> {
       _bodyController = TextEditingController(text: page.noteBody);
       _cueController = TextEditingController(text: page.cueText);
       _summaryController = TextEditingController(text: page.summaryText);
-
-      _titleController.addListener(_syncActivePageData);
-      _bodyController.addListener(_syncActivePageData);
-      _cueController.addListener(_syncActivePageData);
-      _summaryController.addListener(_syncActivePageData);
     } else {
       _titleController = TextEditingController();
       _bodyController = TextEditingController();
       _cueController = TextEditingController();
       _summaryController = TextEditingController();
     }
+
+    _titleController.addListener(_syncActivePageData);
+    _bodyController.addListener(_syncActivePageData);
+    _cueController.addListener(_syncActivePageData);
+    _summaryController.addListener(_syncActivePageData);
   }
 
   void _disposeControllers() {
@@ -106,21 +126,25 @@ class _NotebookPageFlipScreenState extends State<NotebookPageFlipScreen> {
   void _recordHistoryState() {
     if (_currentPageIndex < _notebook.pages.length) {
       final currentPage = _notebook.pages[_currentPageIndex];
-      _undoStack.add(currentPage.copyWith());
-      if (_undoStack.length > 30) {
-        _undoStack.removeAt(0);
+      final stack = _currentUndoStack;
+      stack.add(currentPage.copyWith());
+      if (stack.length > 30) {
+        stack.removeAt(0);
       }
-      _redoStack.clear();
+      _currentRedoStack.clear();
       setState(() {});
     }
   }
 
   void _undo() {
-    if (_undoStack.isNotEmpty && _currentPageIndex < _notebook.pages.length) {
+    final undoStack = _currentUndoStack;
+    if (undoStack.isNotEmpty && _currentPageIndex < _notebook.pages.length) {
+      _saveTimer?.cancel();
       final currentState = _notebook.pages[_currentPageIndex].copyWith();
-      _redoStack.add(currentState);
-      final previousState = _undoStack.removeLast();
+      _currentRedoStack.add(currentState);
+      final previousState = undoStack.removeLast();
 
+      _isRestoring = true;
       setState(() {
         _notebook.pages[_currentPageIndex] = previousState;
         _titleController.text = previousState.noteTitle;
@@ -128,16 +152,20 @@ class _NotebookPageFlipScreenState extends State<NotebookPageFlipScreen> {
         _cueController.text = previousState.cueText;
         _summaryController.text = previousState.summaryText;
       });
+      _isRestoring = false;
       _saveNotebook();
     }
   }
 
   void _redo() {
-    if (_redoStack.isNotEmpty && _currentPageIndex < _notebook.pages.length) {
+    final redoStack = _currentRedoStack;
+    if (redoStack.isNotEmpty && _currentPageIndex < _notebook.pages.length) {
+      _saveTimer?.cancel();
       final currentState = _notebook.pages[_currentPageIndex].copyWith();
-      _undoStack.add(currentState);
-      final nextState = _redoStack.removeLast();
+      _currentUndoStack.add(currentState);
+      final nextState = redoStack.removeLast();
 
+      _isRestoring = true;
       setState(() {
         _notebook.pages[_currentPageIndex] = nextState;
         _titleController.text = nextState.noteTitle;
@@ -145,52 +173,73 @@ class _NotebookPageFlipScreenState extends State<NotebookPageFlipScreen> {
         _cueController.text = nextState.cueText;
         _summaryController.text = nextState.summaryText;
       });
+      _isRestoring = false;
       _saveNotebook();
     }
   }
 
-  void _syncActivePageData() {
+  void _syncActivePageData({bool immediateSave = false}) {
+    if (_isRestoring) return;
     if (_currentPageIndex < _notebook.pages.length) {
       final page = _notebook.pages[_currentPageIndex];
       page.noteTitle = _titleController.text;
       page.noteBody = _bodyController.text;
       page.cueText = _cueController.text;
       page.summaryText = _summaryController.text;
-      _saveNotebook();
+
+      if (immediateSave) {
+        _saveTimer?.cancel();
+        _saveNotebook();
+      } else {
+        _saveTimer?.cancel();
+        _saveTimer = Timer(const Duration(milliseconds: 600), () {
+          _saveNotebook();
+        });
+      }
     }
   }
 
-  void _saveNotebook({bool showFeedback = false}) {
-    NotebookStorageService.instance.saveOrUpdateNotebook(_notebook);
+  Future<bool> _saveNotebook({bool showFeedback = false}) async {
+    final success = await NotebookStorageService.instance.saveOrUpdateNotebook(_notebook);
     widget.onNotebookChanged(_notebook);
     if (showFeedback && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: const Row(
+          content: Row(
             children: [
-              Icon(Icons.check_circle_rounded, color: Colors.white, size: 20),
-              SizedBox(width: 8),
-              Text('تغییرات دفترچه با موفقیت ذخیره شد.'),
+              Icon(
+                success ? Icons.check_circle_rounded : Icons.error_outline_rounded,
+                color: Colors.white,
+                size: 20,
+              ),
+              const SizedBox(width: 8),
+              Text(success ? 'تغییرات دفترچه با موفقیت ذخیره شد.' : 'خطا در ذخیره دفترچه.'),
             ],
           ),
-          backgroundColor: const Color(0xFF1E293B),
+          backgroundColor: success ? const Color(0xFF1E293B) : Colors.red.shade700,
           duration: const Duration(seconds: 2),
           behavior: SnackBarBehavior.floating,
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
         ),
       );
     }
+    return success;
+  }
+
+  void _debouncedSave() {
+    _saveTimer?.cancel();
+    _saveTimer = Timer(const Duration(milliseconds: 500), () {
+      _saveNotebook();
+    });
   }
 
   void _onPageChanged(int index) {
-    _syncActivePageData();
+    _syncActivePageData(immediateSave: true);
     _disposeControllers();
     setState(() {
       _currentPageIndex = index;
       _selectedTextBoxId = null;
       _selectedStickerId = null;
-      _undoStack.clear();
-      _redoStack.clear();
     });
     _initControllersForPage(index);
   }
@@ -198,7 +247,7 @@ class _NotebookPageFlipScreenState extends State<NotebookPageFlipScreen> {
   void _addNewBlankPage() {
     _recordHistoryState();
     final newPage = NotebookPageModel(
-      id: 'p_${DateTime.now().millisecondsSinceEpoch}',
+      id: 'p_${const Uuid().v4()}',
       title: 'برگه ${_notebook.pages.length + 1}',
       pageStyle: PageStyleConfig(pageType: PageType.blank),
     );
@@ -221,11 +270,11 @@ class _NotebookPageFlipScreenState extends State<NotebookPageFlipScreen> {
     if (_currentPageIndex >= _notebook.pages.length) return;
     final page = _notebook.pages[_currentPageIndex];
 
-    final pickedDate = await showDatePicker(
+    final pickedDate = await showPersianDatePickerModal(
       context: context,
       initialDate: page.scheduledDate ?? DateTime.now(),
-      firstDate: DateTime(2020),
-      lastDate: DateTime(2035),
+      firstDate: DateTime.now().subtract(const Duration(days: 365)),
+      lastDate: DateTime.now().add(const Duration(days: 3650)),
     );
 
     if (pickedDate != null && mounted) {
@@ -248,10 +297,10 @@ class _NotebookPageFlipScreenState extends State<NotebookPageFlipScreen> {
       setState(() {
         page.scheduledDate = combined;
       });
-      _saveNotebook();
+      await _saveNotebook();
 
       if (mounted) {
-        final formatted = DateFormat('yyyy/MM/dd HH:mm').format(combined);
+        final formatted = combined.toPersianDateTimeStr();
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('برگه برای تاریخ $formatted زمان‌بندی شد.'),
@@ -387,18 +436,17 @@ class _NotebookPageFlipScreenState extends State<NotebookPageFlipScreen> {
 
       if (result != null && result.files.isNotEmpty) {
         final picked = result.files.first;
-        String? imageUri;
-        if (picked.bytes != null) {
-          final b64 = base64Encode(picked.bytes!);
-          imageUri = 'data:image/png;base64,$b64';
-        } else if (picked.path != null) {
+        String? imageUri = await saveLocalImageFile(bytes: picked.bytes, sourcePath: picked.path);
+        if (imageUri == null && picked.bytes != null) {
+          imageUri = 'data:image/png;base64,${base64Encode(picked.bytes!)}';
+        } else if (imageUri == null && picked.path != null) {
           imageUri = picked.path;
         }
 
         if (imageUri != null) {
           _recordHistoryState();
           final newSticker = StickerItem(
-            id: 'st_img_${DateTime.now().millisecondsSinceEpoch}',
+            id: 'st_img_${const Uuid().v4()}',
             imagePath: imageUri,
             position: const Offset(80, 140),
             scale: 1.5,
@@ -476,65 +524,96 @@ class _NotebookPageFlipScreenState extends State<NotebookPageFlipScreen> {
   }
 
   void _showFontPickerSheet() {
-    final availableFonts = [
-      {'name': 'Vazirmatn', 'label': 'وزیرمتن (استاندارد فارسی)'},
-      {'name': 'Sahel', 'label': 'ساحل (کلاسیک و زیبا)'},
-      {'name': 'Shabnam', 'label': 'شبنم (مدرن و خوانا)'},
-      {'name': 'Lalezar', 'label': 'لاله‌زار (فانتزی و نمایشی)'},
-      {'name': 'Playfair Display', 'label': 'Playfair Display (Serif انگلیسی)'},
-      {'name': 'Lora', 'label': 'Lora (رسمی و اداری)'},
-    ];
+    final availableFonts = AppFonts.availableFonts;
 
     showModalBottomSheet(
       context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.white,
       shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
-      builder: (context) => Container(
-        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Center(
-              child: Container(
-                width: 40,
-                height: 4,
-                decoration: BoxDecoration(color: Colors.grey.shade300, borderRadius: BorderRadius.circular(2)),
-              ),
-            ),
-            const SizedBox(height: 16),
-            Text(
-              'انتخاب فونت متن',
-              style: GoogleFonts.vazirmatn(fontSize: 16, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 14),
-            ...availableFonts.map((f) {
-              final isSelected = _currentFontName == f['name'];
-              return ListTile(
-                title: Text(
-                  f['label']!,
-                  style: GoogleFonts.getFont(
-                    f['name']!,
-                    fontSize: 15,
-                    fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-                    color: isSelected ? const Color(0xFFFF7043) : const Color(0xFF1E293B),
-                  ),
+      builder: (context) => SafeArea(
+        child: Container(
+          constraints: BoxConstraints(
+            maxHeight: MediaQuery.of(context).size.height * 0.72,
+          ),
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Center(
+                child: Container(
+                  width: 40,
+                  height: 4,
+                  decoration: BoxDecoration(color: Colors.grey.shade300, borderRadius: BorderRadius.circular(2)),
                 ),
-                trailing: isSelected ? const Icon(Icons.check_circle_rounded, color: Color(0xFFFF7043)) : null,
-                onTap: () {
-                  Navigator.pop(context);
-                  _recordHistoryState();
-                  setState(() {
-                    _currentFontName = f['name']!;
-                    if (_currentPageIndex < _notebook.pages.length && _selectedTextBoxId != null) {
-                      final box = _notebook.pages[_currentPageIndex].textBoxes.firstWhere((b) => b.id == _selectedTextBoxId);
-                      box.fontName = f['name']!;
-                    }
-                  });
-                  _saveNotebook();
-                },
-              );
-            }),
-          ],
+              ),
+              const SizedBox(height: 16),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    'انتخاب قلم و فونت متن',
+                    style: GoogleFonts.vazirmatn(fontSize: 16, fontWeight: FontWeight.bold),
+                  ),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFFFF3E0),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Text(
+                      AppFonts.normalizeFontName(_currentFontName),
+                      style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold, color: Color(0xFFE65100)),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 14),
+              Flexible(
+                child: ListView.separated(
+                  shrinkWrap: true,
+                  itemCount: availableFonts.length,
+                  separatorBuilder: (context, index) => const Divider(height: 1, color: Color(0xFFF1F5F9)),
+                  itemBuilder: (context, idx) {
+                    final f = availableFonts[idx];
+                    final isSelected = AppFonts.normalizeFontName(_currentFontName) == f.name;
+                    return ListTile(
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                      title: Text(
+                        f.label,
+                        style: AppFonts.getSafeFont(
+                          f.name,
+                          fontSize: 15,
+                          fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
+                          color: isSelected ? const Color(0xFFFF7043) : const Color(0xFF1E293B),
+                        ),
+                      ),
+                      subtitle: Text(
+                        f.category,
+                        style: TextStyle(fontSize: 11, color: Colors.grey.shade500),
+                      ),
+                      trailing: isSelected
+                          ? const Icon(Icons.check_circle_rounded, color: Color(0xFFFF7043), size: 22)
+                          : null,
+                      onTap: () {
+                        Navigator.pop(context);
+                        _recordHistoryState();
+                        setState(() {
+                          _currentFontName = f.name;
+                          if (_currentPageIndex < _notebook.pages.length && _selectedTextBoxId != null) {
+                            final box = _notebook.pages[_currentPageIndex].textBoxes.firstWhere((b) => b.id == _selectedTextBoxId);
+                            box.fontName = f.name;
+                          }
+                        });
+                        _saveNotebook();
+                      },
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -594,11 +673,21 @@ class _NotebookPageFlipScreenState extends State<NotebookPageFlipScreen> {
               Navigator.pop(context);
               setState(() {
                 _notebook.pages.removeAt(_currentPageIndex);
-                if (_currentPageIndex >= _notebook.pages.length && _currentPageIndex > 0) {
+                if (_notebook.pages.isEmpty) {
+                  _notebook.pages.add(NotebookPageModel(
+                    id: 'p_${const Uuid().v4()}',
+                    title: 'برگه ۱',
+                    pageStyle: PageStyleConfig(pageType: PageType.blank),
+                  ));
+                  _currentPageIndex = 0;
+                } else if (_currentPageIndex >= _notebook.pages.length) {
                   _currentPageIndex = _notebook.pages.length - 1;
                 }
               });
               _saveNotebook();
+              if (_pageController.hasClients) {
+                _pageController.jumpToPage(_currentPageIndex);
+              }
               _onPageChanged(_currentPageIndex);
             },
             child: const Text('حذف'),
@@ -614,7 +703,7 @@ class _NotebookPageFlipScreenState extends State<NotebookPageFlipScreen> {
 
     _recordHistoryState();
     final newBox = TextBoxItem(
-      id: 'tb_${DateTime.now().millisecondsSinceEpoch}',
+      id: 'tb_${const Uuid().v4()}',
       text: 'یادداشت جدید',
       position: const Offset(60, 120),
       inkColor: _currentInkColor,
@@ -645,7 +734,7 @@ class _NotebookPageFlipScreenState extends State<NotebookPageFlipScreen> {
       onStickerSelected: (emoji) {
         _recordHistoryState();
         final newSticker = StickerItem(
-          id: 'st_${DateTime.now().millisecondsSinceEpoch}',
+          id: 'st_${const Uuid().v4()}',
           content: emoji,
           position: const Offset(100, 150),
           scale: 1.2,
@@ -699,7 +788,7 @@ class _NotebookPageFlipScreenState extends State<NotebookPageFlipScreen> {
   }
 
   void _insertCurrentTimeToActiveField() {
-    final nowStr = DateFormat('hh:mm a').format(DateTime.now());
+    final nowStr = DateFormat('hh:mm a', 'fa').format(DateTime.now());
     _recordHistoryState();
     if (_currentPageIndex < _notebook.pages.length && _selectedTextBoxId != null) {
       final box = _notebook.pages[_currentPageIndex].textBoxes.firstWhere((b) => b.id == _selectedTextBoxId);
@@ -893,13 +982,14 @@ class _NotebookPageFlipScreenState extends State<NotebookPageFlipScreen> {
     final page = _notebook.pages[_currentPageIndex];
 
     if (_isEraser) {
+      _recordHistoryState();
       _eraseNearPoint(localPos, page);
       return;
     }
 
     _recordHistoryState();
     final newStroke = DrawingStroke(
-      id: 'stk_${DateTime.now().millisecondsSinceEpoch}',
+      id: 'stk_${const Uuid().v4()}',
       points: [DrawingPoint.fromOffset(localPos)],
       color: _currentInkColor,
       strokeWidth: _penStrokeWidth,
@@ -932,8 +1022,9 @@ class _NotebookPageFlipScreenState extends State<NotebookPageFlipScreen> {
     final page = _notebook.pages[_currentPageIndex];
 
     if (_currentStroke != null) {
+      final finishedStroke = _currentStroke!.copyWith();
       setState(() {
-        page.drawingStrokes.add(_currentStroke!);
+        page.drawingStrokes.add(finishedStroke);
         _currentStroke = null;
       });
       _saveNotebook();
@@ -1014,6 +1105,8 @@ class _NotebookPageFlipScreenState extends State<NotebookPageFlipScreen> {
 
   @override
   void dispose() {
+    _saveTimer?.cancel();
+    _syncActivePageData(immediateSave: true);
     _disposeControllers();
     _pageController.dispose();
     super.dispose();
@@ -1028,27 +1121,34 @@ class _NotebookPageFlipScreenState extends State<NotebookPageFlipScreen> {
     final isKeyboardOpen = MediaQuery.of(context).viewInsets.bottom > 50;
     final isEditingText = isKeyboardOpen || _selectedTextBoxId != null;
 
-    final canUndo = _undoStack.isNotEmpty;
-    final canRedo = _redoStack.isNotEmpty;
+    final canUndo = _currentUndoStack.isNotEmpty;
+    final canRedo = _currentRedoStack.isNotEmpty;
 
-    return Scaffold(
-      backgroundColor: const Color(0xFFF1F5F9),
-      // PlanWiz Top App Bar
-      appBar: PreferredSize(
-        preferredSize: const Size.fromHeight(60),
-        child: Container(
-          color: Colors.white,
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-          child: SafeArea(
-            bottom: false,
-            child: Row(
-              children: [
-                // Left 1: Squircle Back Button
-                InkWell(
-                  onTap: () {
-                    _syncActivePageData();
-                    Navigator.pop(context, _notebook);
-                  },
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop) return;
+        _syncActivePageData(immediateSave: true);
+        Navigator.pop(context, _notebook);
+      },
+      child: Scaffold(
+        backgroundColor: const Color(0xFFF1F5F9),
+        // PlanWiz Top App Bar
+        appBar: PreferredSize(
+          preferredSize: const Size.fromHeight(60),
+          child: Container(
+            color: Colors.white,
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            child: SafeArea(
+              bottom: false,
+              child: Row(
+                children: [
+                  // Left 1: Squircle Back Button
+                  InkWell(
+                    onTap: () {
+                      _syncActivePageData(immediateSave: true);
+                      Navigator.pop(context, _notebook);
+                    },
                   borderRadius: BorderRadius.circular(10),
                   child: Container(
                     padding: const EdgeInsets.all(7),
@@ -1125,7 +1225,7 @@ class _NotebookPageFlipScreenState extends State<NotebookPageFlipScreen> {
                   ),
                   onPressed: _scheduleCurrentPage,
                   tooltip: currentPage?.scheduledDate != null
-                      ? 'زمان‌بندی شده: ${DateFormat('yyyy/MM/dd HH:mm').format(currentPage!.scheduledDate!)}'
+                      ? 'زمان‌بندی شده: ${currentPage!.scheduledDate!.toPersianDateTimeStr()}'
                       : 'افزودن زمان‌بندی / تاریخ',
                   visualDensity: VisualDensity.compact,
                 ),
@@ -1238,6 +1338,9 @@ class _NotebookPageFlipScreenState extends State<NotebookPageFlipScreen> {
           // Main Canvas with PageView
           PageView.builder(
             controller: _pageController,
+            physics: _isInteractingWithElement
+                ? const NeverScrollableScrollPhysics()
+                : const PageScrollPhysics(parent: BouncingScrollPhysics()),
             itemCount: totalItems,
             onPageChanged: _onPageChanged,
             itemBuilder: (context, index) {
@@ -1250,6 +1353,7 @@ class _NotebookPageFlipScreenState extends State<NotebookPageFlipScreen> {
               final isActive = index == _currentPageIndex;
 
               return Padding(
+                key: ValueKey(page.id),
                 padding: const EdgeInsets.fromLTRB(14, 12, 14, 80),
                 child: Column(
                   children: [
@@ -1269,7 +1373,7 @@ class _NotebookPageFlipScreenState extends State<NotebookPageFlipScreen> {
                             const Icon(Icons.alarm_on_rounded, size: 14, color: Color(0xFFBF360C)),
                             const SizedBox(width: 6),
                             Text(
-                              'زمان‌بندی: ${DateFormat('yyyy/MM/dd HH:mm').format(page.scheduledDate!)}',
+                              'زمان‌بندی: ${page.scheduledDate!.toPersianDateTimeStr()}',
                               style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold, color: Color(0xFFBF360C)),
                             ),
                           ],
@@ -1308,18 +1412,31 @@ class _NotebookPageFlipScreenState extends State<NotebookPageFlipScreen> {
                           setState(() {
                             _selectedTextBoxId = id;
                             _selectedStickerId = null;
+                            try {
+                              final box = page.textBoxes.firstWhere((b) => b.id == id);
+                              _currentFontName = box.fontName;
+                              _currentFontSize = box.fontSize;
+                              _currentInkColor = box.inkColor;
+                              _textAlign = box.textAlign;
+                              _isBold = box.isBold;
+                              _isItalic = box.isItalic;
+                            } catch (_) {}
                           });
                         },
                         onPositionChanged: (id, newPos) {
-                          final box = page.textBoxes.firstWhere((b) => b.id == id);
-                          box.position = newPos;
-                          _saveNotebook();
+                          setState(() {
+                            final box = page.textBoxes.firstWhere((b) => b.id == id);
+                            box.position = newPos;
+                          });
+                          _debouncedSave();
                         },
                         onSizeChanged: (id, newW, newH) {
-                          final box = page.textBoxes.firstWhere((b) => b.id == id);
-                          box.width = newW;
-                          box.height = newH;
-                          _saveNotebook();
+                          setState(() {
+                            final box = page.textBoxes.firstWhere((b) => b.id == id);
+                            box.width = newW;
+                            box.height = newH;
+                          });
+                          _debouncedSave();
                         },
                         onTextChanged: (id, newText) {
                           final box = page.textBoxes.firstWhere((b) => b.id == id);
@@ -1341,14 +1458,18 @@ class _NotebookPageFlipScreenState extends State<NotebookPageFlipScreen> {
                           });
                         },
                         onStickerPositionChanged: (id, newPos) {
-                          final st = page.stickers.firstWhere((s) => s.id == id);
-                          st.position = newPos;
-                          _saveNotebook();
+                          setState(() {
+                            final st = page.stickers.firstWhere((s) => s.id == id);
+                            st.position = newPos;
+                          });
+                          _debouncedSave();
                         },
                         onStickerScaleChanged: (id, newScale) {
-                          final st = page.stickers.firstWhere((s) => s.id == id);
-                          st.scale = newScale;
-                          _saveNotebook();
+                          setState(() {
+                            final st = page.stickers.firstWhere((s) => s.id == id);
+                            st.scale = newScale;
+                          });
+                          _debouncedSave();
                         },
                         onDeleteSticker: (id) {
                           _recordHistoryState();
@@ -1356,6 +1477,17 @@ class _NotebookPageFlipScreenState extends State<NotebookPageFlipScreen> {
                             page.stickers.removeWhere((s) => s.id == id);
                             _selectedStickerId = null;
                           });
+                          _saveNotebook();
+                        },
+                        onInteractionStart: () {
+                          if (!_isInteractingWithElement) {
+                            setState(() => _isInteractingWithElement = true);
+                          }
+                        },
+                        onInteractionEnd: () {
+                          if (_isInteractingWithElement) {
+                            setState(() => _isInteractingWithElement = false);
+                          }
                           _saveNotebook();
                         },
                         onCanvasTap: (offset) {
@@ -1438,6 +1570,7 @@ class _NotebookPageFlipScreenState extends State<NotebookPageFlipScreen> {
               },
             )
           : null,
+      ),
     );
   }
 

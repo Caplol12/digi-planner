@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
 import '../models/page_style_model.dart';
+import '../theme/app_fonts.dart';
 
 class NaturalPageNoteEditor extends StatefulWidget {
   final PageStyleConfig config;
@@ -54,17 +54,10 @@ class _NaturalPageNoteEditorState extends State<NaturalPageNoteEditor> {
       height: lineHeight,
     );
 
-    switch (widget.fontName) {
-      case 'Nunito':
-        return GoogleFonts.nunito(textStyle: baseStyle);
-      case 'Roboto':
-        return GoogleFonts.roboto(textStyle: baseStyle);
-      case 'Courier':
-        return GoogleFonts.courierPrime(textStyle: baseStyle);
-      case 'Vazirmatn':
-      default:
-        return GoogleFonts.vazirmatn(textStyle: baseStyle);
-    }
+    return AppFonts.getSafeFont(
+      widget.fontName,
+      textStyle: baseStyle,
+    );
   }
 
   @override

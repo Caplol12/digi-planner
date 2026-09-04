@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
 import '../models/text_box_model.dart';
+import '../theme/app_fonts.dart';
 
 /// A custom painter that draws a delicate dashed rectangle border
 class DashedRectPainter extends CustomPainter {
@@ -124,47 +124,14 @@ class _BoundedWritingZoneWidgetState extends State<BoundedWritingZoneWidget> {
     final FontWeight weight = widget.item.isBold ? FontWeight.bold : FontWeight.w500;
     final FontStyle style = widget.item.isItalic ? FontStyle.italic : FontStyle.normal;
 
-    TextStyle baseStyle;
-    switch (widget.item.fontName) {
-      case 'Nunito':
-        baseStyle = GoogleFonts.nunito(
-          color: widget.item.inkColor,
-          fontSize: widget.item.fontSize,
-          fontWeight: weight,
-          fontStyle: style,
-          height: standardLineHeight,
-        );
-        break;
-      case 'Roboto':
-        baseStyle = GoogleFonts.roboto(
-          color: widget.item.inkColor,
-          fontSize: widget.item.fontSize,
-          fontWeight: weight,
-          fontStyle: style,
-          height: standardLineHeight,
-        );
-        break;
-      case 'Courier':
-        baseStyle = GoogleFonts.courierPrime(
-          color: widget.item.inkColor,
-          fontSize: widget.item.fontSize,
-          fontWeight: weight,
-          fontStyle: style,
-          height: standardLineHeight,
-        );
-        break;
-      case 'Vazirmatn':
-      default:
-        baseStyle = GoogleFonts.vazirmatn(
-          color: widget.item.inkColor,
-          fontSize: widget.item.fontSize,
-          fontWeight: weight,
-          fontStyle: style,
-          height: standardLineHeight,
-        );
-        break;
-    }
-    return baseStyle;
+    return AppFonts.getSafeFont(
+      widget.item.fontName,
+      color: widget.item.inkColor,
+      fontSize: widget.item.fontSize,
+      fontWeight: weight,
+      fontStyle: style,
+      height: standardLineHeight,
+    );
   }
 
   @override

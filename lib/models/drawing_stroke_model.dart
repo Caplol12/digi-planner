@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:uuid/uuid.dart';
 
 class DrawingPoint {
   final double x;
@@ -34,6 +35,7 @@ class DrawingStroke {
     this.isHighlighter = false,
   });
 
+  /// Deep copies points so mutating drawing canvas or history never leaks
   DrawingStroke copyWith({
     String? id,
     List<DrawingPoint>? points,
@@ -43,12 +45,16 @@ class DrawingStroke {
   }) {
     return DrawingStroke(
       id: id ?? this.id,
-      points: points ?? List.from(this.points),
+      points: points != null
+          ? points.map((p) => DrawingPoint(p.x, p.y)).toList()
+          : this.points.map((p) => DrawingPoint(p.x, p.y)).toList(),
       color: color ?? this.color,
       strokeWidth: strokeWidth ?? this.strokeWidth,
       isHighlighter: isHighlighter ?? this.isHighlighter,
     );
   }
+
+  DrawingStroke deepCopy() => copyWith();
 
   Map<String, dynamic> toJson() => {
         'id': id,
@@ -59,7 +65,7 @@ class DrawingStroke {
       };
 
   factory DrawingStroke.fromJson(Map<String, dynamic> json) => DrawingStroke(
-        id: json['id'] as String? ?? 'stroke_${DateTime.now().millisecondsSinceEpoch}',
+        id: json['id'] as String? ?? 'stroke_${const Uuid().v4()}',
         points: (json['points'] as List?)
                 ?.map((p) => DrawingPoint.fromJson(p as Map<String, dynamic>))
                 .toList() ??

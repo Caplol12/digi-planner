@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../screens/premium_upgrade_screen.dart';
 import '../theme/app_theme.dart';
 
 class ProBadge extends StatelessWidget {
@@ -108,8 +109,14 @@ class ProBadge extends StatelessWidget {
               width: double.infinity,
               height: 52,
               child: ElevatedButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text('ارتقا به نسخه حرفه‌ای (Upgrade Now)'),
+                onPressed: () {
+                  Navigator.pop(context);
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (context) => const PremiumUpgradeScreen()),
+                  );
+                },
+                child: const Text('ارتقا به نسخه پرمیوم (Upgrade Now)'),
               ),
             ),
             const SizedBox(height: 16),

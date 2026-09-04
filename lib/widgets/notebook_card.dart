@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
-import 'package:intl/intl.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../models/notebook_model.dart';
+import '../services/persian_date_helper.dart';
+import '../theme/app_theme.dart';
 import 'notebook_cover_widget.dart';
 import 'planner_context_menu.dart';
 
@@ -58,15 +59,15 @@ class NotebookCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final dateFormat = DateFormat('yyyy/MM/dd');
-    final formattedDate = dateFormat.format(notebook.updatedAt);
+    final c = context.c;
+    final formattedDate = notebook.updatedAt.toPersianDateStr();
 
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: c.cardBackground,
         borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: const Color(0xFFE2E8F0)),
+        border: Border.all(color: c.divider),
         boxShadow: [
           BoxShadow(
             color: Colors.black.withValues(alpha: 0.05),
@@ -111,7 +112,7 @@ class NotebookCard extends StatelessWidget {
                               style: GoogleFonts.vazirmatn(
                                 fontSize: 16,
                                 fontWeight: FontWeight.w800,
-                                color: const Color(0xFF1E293B),
+                                color: c.textPrimary,
                               ),
                             ),
                           ),

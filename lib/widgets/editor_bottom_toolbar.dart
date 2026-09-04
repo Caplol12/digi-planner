@@ -14,6 +14,7 @@ class EditorBottomToolbar extends StatelessWidget {
   final VoidCallback onColorPicker;
   final VoidCallback onToggleAlign;
   final VoidCallback onToggleBold;
+  final VoidCallback? onToggleItalic;
   final VoidCallback onToggleHighlight;
   final VoidCallback onDeleteSelected;
 
@@ -29,6 +30,7 @@ class EditorBottomToolbar extends StatelessWidget {
     required this.onColorPicker,
     required this.onToggleAlign,
     required this.onToggleBold,
+    this.onToggleItalic,
     required this.onToggleHighlight,
     required this.onDeleteSelected,
   });
@@ -100,6 +102,14 @@ class EditorBottomToolbar extends StatelessWidget {
                   icon: Icons.format_bold_rounded,
                   label: 'بولد',
                   onTap: onToggleBold,
+                ),
+
+              // Italic
+              if (showTextTools && onToggleItalic != null)
+                _buildToolItem(
+                  icon: Icons.format_italic_rounded,
+                  label: 'ایتالیک',
+                  onTap: onToggleItalic!,
                 ),
 
               // Highlighter

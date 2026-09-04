@@ -1,28 +1,29 @@
 import 'dart:convert';
-import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:file_picker/file_picker.dart';
 import '../models/ai_layout_model.dart';
+import '../models/notebook_model.dart';
 import '../models/template_model.dart';
-import '../models/journal_model.dart';
+import '../services/ai_subscription_service.dart';
 import '../services/ai_vision_layout_service.dart';
 import '../services/notebook_export_service.dart';
 import '../services/notebook_storage_service.dart';
 import '../services/supabase_service.dart';
 import '../services/user_ai_preferences_service.dart';
+import '../widgets/platform_image_helper.dart';
 import '../widgets/pro_badge.dart';
 import '../widgets/interactive_check_box_widget.dart';
 import '../theme/app_theme.dart';
-import 'journal_editor_screen.dart';
+import 'premium_upgrade_screen.dart';
 
 class ProTemplateBuilderScreen extends StatefulWidget {
-  final Function(JournalItem) onJournalCreated;
+  final Function(JournalTemplate template, NotebookPageModel initialPage) onTemplateCreated;
 
   const ProTemplateBuilderScreen({
     super.key,
-    required this.onJournalCreated,
+    required this.onTemplateCreated,
   });
 
   @override
@@ -40,6 +41,10 @@ class _ProTemplateBuilderScreenState extends State<ProTemplateBuilderScreen> {
   bool _isAnalyzing = false;
   AILayoutResult? _analysisResult;
   String? _selectedBoxId;
+  bool _isManualEditMode = false;
+  bool _isDraggingBoxOrHandle = false;
+  DetectedBox? _lastDeletedBox;
+  int? _lastDeletedBoxIndex;
 
   // Conversational Assistant State
   final TextEditingController _chatController = TextEditingController();
@@ -60,6 +65,7 @@ class _ProTemplateBuilderScreenState extends State<ProTemplateBuilderScreen> {
 
   Future<void> _refreshAiConfig() async {
     await UserAiPreferencesService.ensureLoaded();
+    await AiSubscriptionService.instance.ensureInitialized();
     await AiConfigService.getConfig(forceRefresh: false);
     if (mounted) {
       setState(() {});
@@ -131,6 +137,25 @@ class _ProTemplateBuilderScreenState extends State<ProTemplateBuilderScreen> {
   }
 
   Future<void> _startAIScanningStep() async {
+    await UserAiPreferencesService.ensureLoaded();
+    await AiSubscriptionService.instance.ensureInitialized();
+    final isGoogleAi = UserAiPreferencesService.activeProvider == AiProviderType.googleAiStudio &&
+        UserAiPreferencesService.hasGeminiApiKey;
+
+    if (!isGoogleAi && !AiSubscriptionService.instance.canUseDefaultAi) {
+      if (mounted) {
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (context) => PremiumUpgradeScreen(
+              onOpenAiSettings: _showAiSettingsBottomSheet,
+            ),
+          ),
+        );
+      }
+      return;
+    }
+
     setState(() {
       _currentStep = 1;
       _isAnalyzing = true;
@@ -175,19 +200,50 @@ class _ProTemplateBuilderScreenState extends State<ProTemplateBuilderScreen> {
     } catch (e) {
       if (mounted) {
         setState(() => _isAnalyzing = false);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('خطا در تحلیل هوش مصنوعی: $e'),
-            backgroundColor: Colors.red.shade700,
-            duration: const Duration(seconds: 5),
-          ),
-        );
+        if (e is AiUsageLimitExceededException) {
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (context) => PremiumUpgradeScreen(
+                onOpenAiSettings: _showAiSettingsBottomSheet,
+              ),
+            ),
+          );
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('خطا در تحلیل هوش مصنوعی: $e'),
+              backgroundColor: Colors.red.shade700,
+              duration: const Duration(seconds: 5),
+            ),
+          );
+        }
       }
     }
   }
 
   Future<void> _handleChatSubmit(String message) async {
     if (message.trim().isEmpty || _analysisResult == null) return;
+
+    await UserAiPreferencesService.ensureLoaded();
+    await AiSubscriptionService.instance.ensureInitialized();
+    final isGoogleAi = UserAiPreferencesService.activeProvider == AiProviderType.googleAiStudio &&
+        UserAiPreferencesService.hasGeminiApiKey;
+
+    if (!isGoogleAi && !AiSubscriptionService.instance.canUseDefaultAi) {
+      if (mounted) {
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (context) => PremiumUpgradeScreen(
+              onOpenAiSettings: _showAiSettingsBottomSheet,
+            ),
+          ),
+        );
+      }
+      return;
+    }
+
     _chatController.clear();
 
     setState(() {
@@ -195,26 +251,103 @@ class _ProTemplateBuilderScreenState extends State<ProTemplateBuilderScreen> {
       _chatHistory.add({'role': 'user', 'text': message});
     });
 
-    final res = await AiVisionLayoutService.processChatEditCommand(
-      userCommand: message,
-      currentBoxes: _analysisResult!.detectedBoxes,
-    );
+    try {
+      final res = await AiVisionLayoutService.processChatEditCommand(
+        userCommand: message,
+        currentBoxes: _analysisResult!.detectedBoxes,
+      );
+
+      if (mounted) {
+        setState(() {
+          _isChatLoading = false;
+          _analysisResult = AILayoutResult(
+            imagePath: _analysisResult!.imagePath,
+            imageBytes: _analysisResult!.imageBytes ?? _selectedImageBytes,
+            aspectRatio: _analysisResult!.aspectRatio,
+            title: _analysisResult!.title,
+            detectedBoxes: res.updatedBoxes,
+            checkpoints: _analysisResult!.checkpoints,
+            analysisEngine: _analysisResult!.analysisEngine,
+          );
+          _chatHistory.add({'role': 'ai', 'text': res.assistantMessage});
+          _currentChips = res.suggestionChips;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isChatLoading = false);
+        if (e is AiUsageLimitExceededException) {
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (context) => PremiumUpgradeScreen(
+                onOpenAiSettings: _showAiSettingsBottomSheet,
+              ),
+            ),
+          );
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('خطا در چت هوش مصنوعی: $e'),
+              backgroundColor: Colors.red.shade700,
+            ),
+          );
+        }
+      }
+    }
+  }
+
+  void _deleteBox(DetectedBox box) {
+    if (_analysisResult == null) return;
+    final idx = _analysisResult!.detectedBoxes.indexOf(box);
+    setState(() {
+      _lastDeletedBox = box;
+      _lastDeletedBoxIndex = idx;
+      _analysisResult!.detectedBoxes.removeWhere((b) => b.id == box.id);
+      if (_selectedBoxId == box.id) {
+        _selectedBoxId = null;
+      }
+    });
 
     if (mounted) {
-      setState(() {
-        _isChatLoading = false;
-        _analysisResult = AILayoutResult(
-          imagePath: _analysisResult!.imagePath,
-          imageBytes: _analysisResult!.imageBytes ?? _selectedImageBytes,
-          aspectRatio: _analysisResult!.aspectRatio,
-          title: _analysisResult!.title,
-          detectedBoxes: res.updatedBoxes,
-          checkpoints: _analysisResult!.checkpoints,
-          analysisEngine: _analysisResult!.analysisEngine,
-        );
-        _chatHistory.add({'role': 'ai', 'text': res.assistantMessage});
-        _currentChips = res.suggestionChips;
-      });
+      ScaffoldMessenger.of(context).hideCurrentSnackBar();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Row(
+            children: [
+              const Icon(Icons.delete_outline_rounded, color: Colors.white, size: 20),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'باکس «${box.label.isNotEmpty ? box.label : box.typeTitlePersian}» حذف شد.',
+                  style: const TextStyle(fontSize: 12),
+                ),
+              ),
+            ],
+          ),
+          action: SnackBarAction(
+            label: 'بازگردانی',
+            textColor: const Color(0xFFFFCC80),
+            onPressed: () {
+              if (_lastDeletedBox != null && _analysisResult != null) {
+                setState(() {
+                  if (_lastDeletedBoxIndex != null &&
+                      _lastDeletedBoxIndex! >= 0 &&
+                      _lastDeletedBoxIndex! <= _analysisResult!.detectedBoxes.length) {
+                    _analysisResult!.detectedBoxes.insert(_lastDeletedBoxIndex!, _lastDeletedBox!);
+                  } else {
+                    _analysisResult!.detectedBoxes.add(_lastDeletedBox!);
+                  }
+                  _selectedBoxId = _lastDeletedBox!.id;
+                });
+              }
+            },
+          ),
+          backgroundColor: const Color(0xFF1E293B),
+          behavior: SnackBarBehavior.floating,
+          duration: const Duration(seconds: 4),
+        ),
+      );
     }
   }
 
@@ -257,39 +390,15 @@ class _ProTemplateBuilderScreenState extends State<ProTemplateBuilderScreen> {
     // Persist custom template to storage registry so it is reusable and resolves in NotebookPageModel
     NotebookStorageService.instance.saveOrUpdateCustomTemplate(customTemplate);
 
-    final boxCount = _analysisResult!.detectedBoxes.length;
-    final checkCount = _analysisResult!.checkpoints.length;
-    String subInfo = 'شناسایی $boxCount باکس متن';
-    if (checkCount > 0) {
-      subInfo += ' و $checkCount چک‌باکس هوشمند';
-    }
-
-    final initialJournal = JournalItem(
-      id: 'ai_journal_${DateTime.now().millisecondsSinceEpoch}',
-      title: _selectedFileName != null ? 'ژورنال ${_selectedFileName!}' : 'قالب اختصاصی هوش مصنوعی',
-      subtitle: subInfo,
-      category: 'قالب حرفه‌ای',
-      createdAt: DateTime.now(),
-      pageCount: 1,
-      gradientColors: const [Color(0xFFFF7043), Color(0xFFFF8A65)],
-      icon: Icons.auto_awesome_rounded,
+    final page = NotebookPageModel.fromJournalContent(
+      id: 'p_${DateTime.now().millisecondsSinceEpoch}',
+      title: _selectedFileName != null ? 'برگه ${_selectedFileName!}' : 'قالب هوش مصنوعی',
       content: serializedData,
-      tags: ['AI Vision', 'قالب حرفه‌ای'],
+      templateId: customTemplate.id,
     );
 
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) => JournalEditorScreen(
-          template: customTemplate,
-          existingJournal: initialJournal,
-          onSave: (j) {
-            widget.onJournalCreated(j);
-            Navigator.pop(context); // Close builder screen
-          },
-        ),
-      ),
-    );
+    widget.onTemplateCreated(customTemplate, page);
+    Navigator.pop(context); // Close builder screen
   }
 
   Future<void> _exportAiLayoutToJson() async {
@@ -325,7 +434,12 @@ class _ProTemplateBuilderScreenState extends State<ProTemplateBuilderScreen> {
 
       if (result != null && result.files.isNotEmpty) {
         final bytes = result.files.first.bytes;
-        final fileStr = bytes != null ? utf8.decode(bytes) : await File(result.files.first.path!).readAsString();
+        final rawBytes = bytes ??
+            (result.files.first.path != null
+                ? await readBytesFromPath(result.files.first.path!)
+                : null);
+        if (rawBytes == null) return;
+        final fileStr = utf8.decode(rawBytes);
         final importRes = NotebookExportService.instance.importPackageFromJson(fileStr);
 
         if (importRes.isSuccess && (importRes.aiLayout != null || importRes.template != null || importRes.page != null)) {
@@ -447,6 +561,15 @@ class _ProTemplateBuilderScreenState extends State<ProTemplateBuilderScreen> {
         return StatefulBuilder(
           builder: (context, setSheetState) {
             final isGoogleSelected = tempProvider == AiProviderType.googleAiStudio;
+            final isPrem = AiSubscriptionService.instance.isPremium;
+            final rem = AiSubscriptionService.instance.remainingFreeUsage;
+            final badgeTxt = isPrem ? '💎 پرمیوم نامحدود' : (rem > 0 ? '$rem/15 رایگان' : 'اتمام سهمیه');
+            final badgeClr = isPrem ? const Color(0xFF2E7D32) : (rem > 0 ? const Color(0xFFE65100) : const Color(0xFFC62828));
+            final subTxt = isPrem
+                ? 'دسترسی نامحدود پرمیوم فعال است'
+                : (rem > 0
+                    ? 'استفاده شده: ${AiSubscriptionService.instance.usageCount} از ۱۵ بار رایگان'
+                    : 'سقف ۱۵ بار استفاده رایگان به پایان رسیده است');
 
             return Container(
               margin: EdgeInsets.only(
@@ -531,9 +654,9 @@ class _ProTemplateBuilderScreenState extends State<ProTemplateBuilderScreen> {
                             _buildProviderSelectCard(
                               isSelected: tempProvider == AiProviderType.developer,
                               title: 'هوش مصنوعی پیش‌فرض برنامه (توسعه‌دهنده)',
-                              subtitle: 'بدون نیاز به وارد کردن کلید شخصی؛ کاملاً رایگان و آماده به کار',
-                              badgeText: 'رایگان و پیش‌فرض',
-                              badgeColor: const Color(0xFF2E7D32),
+                              subtitle: subTxt,
+                              badgeText: badgeTxt,
+                              badgeColor: badgeClr,
                               icon: Icons.cloud_done_rounded,
                               iconColor: const Color(0xFF2E7D32),
                               onTap: () {
@@ -542,6 +665,44 @@ class _ProTemplateBuilderScreenState extends State<ProTemplateBuilderScreen> {
                                 });
                               },
                             ),
+                            if (!isPrem && rem <= 0)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 8),
+                                child: InkWell(
+                                  onTap: () {
+                                    Navigator.pop(sheetContext);
+                                    Navigator.push(
+                                      context,
+                                      MaterialPageRoute(
+                                        builder: (context) => PremiumUpgradeScreen(
+                                          onOpenAiSettings: _showAiSettingsBottomSheet,
+                                        ),
+                                      ),
+                                    );
+                                  },
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFFFFF3E0),
+                                      borderRadius: BorderRadius.circular(10),
+                                      border: Border.all(color: const Color(0xFFFFB74D)),
+                                    ),
+                                    child: const Row(
+                                      children: [
+                                        Icon(Icons.diamond_rounded, size: 18, color: Color(0xFFE65100)),
+                                        SizedBox(width: 8),
+                                        Expanded(
+                                          child: Text(
+                                            'ارتقا به پرمیوم (پیام به @metarwa در تلگرام)',
+                                            style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFFE65100)),
+                                          ),
+                                        ),
+                                        Icon(Icons.chevron_left_rounded, size: 18, color: Color(0xFFE65100)),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ),
                             const SizedBox(height: 12),
 
                             // Option 2: Google AI Studio (Personal Key)
@@ -1205,16 +1366,17 @@ class _ProTemplateBuilderScreenState extends State<ProTemplateBuilderScreen> {
           ),
         ),
       );
-    } else if (!kIsWeb && _selectedImagePath.isNotEmpty && !_selectedImagePath.startsWith('assets/')) {
-      try {
-        final file = File(_selectedImagePath);
-        if (file.existsSync()) {
-          return Image.file(
-            file,
-            fit: fit,
-          );
-        }
-      } catch (_) {}
+    } else if (platformFileExists(_selectedImagePath) && !_selectedImagePath.startsWith('assets/')) {
+      return buildPlatformFileImage(
+        filePath: _selectedImagePath,
+        fit: fit,
+        errorWidget: Container(
+          color: const Color(0xFFF1F5F9),
+          child: const Center(
+            child: Icon(Icons.broken_image_rounded, size: 48, color: Colors.grey),
+          ),
+        ),
+      );
     }
     return Image.asset(
       _selectedImagePath.isNotEmpty ? _selectedImagePath : 'assets/templates/daily_planner.jpg',
@@ -1572,7 +1734,11 @@ class _ProTemplateBuilderScreenState extends State<ProTemplateBuilderScreen> {
               ),
             ),
           ),
-          const SizedBox(height: 30),
+          const SizedBox(height: 24),
+
+          // AI Quota / Subscription Banner
+          _buildAiQuotaBanner(),
+          const SizedBox(height: 14),
 
           // Next Step Button
           SizedBox(
@@ -1596,6 +1762,121 @@ class _ProTemplateBuilderScreenState extends State<ProTemplateBuilderScreen> {
           const SizedBox(height: 20),
         ],
       ),
+    );
+  }
+
+  Widget _buildAiQuotaBanner() {
+    return AnimatedBuilder(
+      animation: AiSubscriptionService.instance,
+      builder: (context, _) {
+        final isGoogleAi = UserAiPreferencesService.activeProvider == AiProviderType.googleAiStudio &&
+            UserAiPreferencesService.hasGeminiApiKey;
+        if (isGoogleAi) {
+          return Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+            decoration: BoxDecoration(
+              color: const Color(0xFFEFF6FF),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: const Color(0xFFBFDBFE)),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.auto_awesome_rounded, size: 16, color: Color(0xFF1565C0)),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'استفاده با کلید شخصی Google AI Studio (${UserAiPreferencesService.geminiModel})',
+                    style: const TextStyle(fontSize: 11.5, color: Color(0xFF1565C0), fontWeight: FontWeight.bold),
+                  ),
+                ),
+              ],
+            ),
+          );
+        }
+
+        final isPremium = AiSubscriptionService.instance.isPremium;
+        final remaining = AiSubscriptionService.instance.remainingFreeUsage;
+        final isExhausted = !isPremium && remaining <= 0;
+
+        return Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          decoration: BoxDecoration(
+            color: isPremium
+                ? const Color(0xFFE8F5E9)
+                : isExhausted
+                    ? const Color(0xFFFBE9E7)
+                    : const Color(0xFFFFF8E1),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color: isPremium
+                  ? const Color(0xFFA5D6A7)
+                  : isExhausted
+                      ? const Color(0xFFFFAB91)
+                      : const Color(0xFFFFE082),
+            ),
+          ),
+          child: Row(
+            children: [
+              Icon(
+                isPremium
+                    ? Icons.verified_rounded
+                    : isExhausted
+                        ? Icons.warning_amber_rounded
+                        : Icons.timelapse_rounded,
+                size: 18,
+                color: isPremium
+                    ? const Color(0xFF2E7D32)
+                    : isExhausted
+                        ? const Color(0xFFD84315)
+                        : const Color(0xFFF57F17),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  isPremium
+                      ? 'اشتراک پرمیوم فعال است (استفاده نامحدود از هوش مصنوعی)'
+                      : isExhausted
+                          ? 'سقف ۱۵ استفاده رایگان تمام شد! برای ارتقا پیام دهید.'
+                          : 'سهمیه رایگان هوش مصنوعی پیش‌فرض: $remaining از ۱۵ باقی‌مانده',
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.bold,
+                    color: isPremium
+                        ? const Color(0xFF1B5E20)
+                        : isExhausted
+                            ? const Color(0xFFBF360C)
+                            : const Color(0xFFE65100),
+                  ),
+                ),
+              ),
+              if (!isPremium)
+                InkWell(
+                  onTap: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => PremiumUpgradeScreen(
+                          onOpenAiSettings: _showAiSettingsBottomSheet,
+                        ),
+                      ),
+                    );
+                  },
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: isExhausted ? const Color(0xFFD84315) : const Color(0xFFFF8F00),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Text(
+                      isExhausted ? 'ارتقا به پرمیوم' : 'پرمیوم',
+                      style: const TextStyle(fontSize: 11, color: Colors.white, fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        );
+      },
     );
   }
 
@@ -1642,6 +1923,106 @@ class _ProTemplateBuilderScreenState extends State<ProTemplateBuilderScreen> {
     );
   }
 
+  Widget _buildManualEditControlCard() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: _isManualEditMode ? const Color(0xFFFFF7ED) : Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+          color: _isManualEditMode ? const Color(0xFFFF9800) : const Color(0xFFE2E8F0),
+          width: _isManualEditMode ? 1.5 : 1.0,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: (_isManualEditMode ? const Color(0xFFFF9800) : Colors.black).withValues(alpha: 0.05),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: _isManualEditMode ? const Color(0xFFFF7043) : const Color(0xFFF1F5F9),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Icon(
+              _isManualEditMode ? Icons.edit_note_rounded : Icons.tune_rounded,
+              size: 20,
+              color: _isManualEditMode ? Colors.white : const Color(0xFF64748B),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Text(
+                      'ویرایش دستی باکس‌ها',
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.bold,
+                        color: _isManualEditMode ? const Color(0xFFE65100) : const Color(0xFF1E293B),
+                      ),
+                    ),
+                    if (_isManualEditMode) ...[
+                      const SizedBox(width: 6),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFFF7043),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: const Text(
+                          'فعال',
+                          style: TextStyle(fontSize: 9.5, color: Colors.white, fontWeight: FontWeight.bold),
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  _isManualEditMode
+                      ? 'روی باکس لمس کنید: دستگیره ⤡ برای تغییر سایز، مرکز برای جابه‌جایی و ✖ برای حذف'
+                      : 'امکان کوچک یا بزرگ کردن اندازه باکس‌ها با دست، جابه‌جایی و حذف',
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: _isManualEditMode ? const Color(0xFFBF360C) : const Color(0xFF64748B),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Switch.adaptive(
+            value: _isManualEditMode,
+            activeThumbColor: const Color(0xFFFF7043),
+            activeTrackColor: const Color(0xFFFFCCBC),
+            onChanged: (val) {
+              setState(() {
+                _isManualEditMode = val;
+                if (_isManualEditMode) {
+                  if (_selectedBoxId == null &&
+                      _analysisResult != null &&
+                      _analysisResult!.detectedBoxes.isNotEmpty) {
+                    _selectedBoxId = _analysisResult!.detectedBoxes.first.id;
+                  }
+                } else {
+                  _selectedBoxId = null;
+                }
+              });
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
   // -------------------------------------------------------------
   // STEP 2: AI Scanning & Box Placement
   // -------------------------------------------------------------
@@ -1679,6 +2060,9 @@ class _ProTemplateBuilderScreenState extends State<ProTemplateBuilderScreen> {
     }
 
     return SingleChildScrollView(
+      physics: _isDraggingBoxOrHandle
+          ? const NeverScrollableScrollPhysics()
+          : const AlwaysScrollableScrollPhysics(parent: BouncingScrollPhysics()),
       padding: const EdgeInsets.all(16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1711,6 +2095,10 @@ class _ProTemplateBuilderScreenState extends State<ProTemplateBuilderScreen> {
               ],
             ),
           ),
+          const SizedBox(height: 12),
+
+          // Manual Edit Mode Toggle & Controls Card
+          _buildManualEditControlCard(),
           const SizedBox(height: 16),
 
           // Canvas with Bounding Boxes
@@ -1749,146 +2137,274 @@ class _ProTemplateBuilderScreenState extends State<ProTemplateBuilderScreen> {
                                 final width = box.normalizedWidth * constraints.maxWidth;
                                 final height = box.normalizedHeight * constraints.maxHeight;
 
+                                // Keep buttons and handles visible without being cut off by canvas edges
+                                final deleteTop = top < 14 ? 2.0 : -10.0;
+                                final deleteLeft = left < 14 ? 2.0 : -10.0;
+                                final resizeBottom = (top + height > constraints.maxHeight - 16) ? 2.0 : -10.0;
+                                final resizeRight = (left + width > constraints.maxWidth - 16) ? 2.0 : -10.0;
+
                                 return Positioned(
                                   left: left,
                                   top: top,
                                   width: width,
                                   height: height,
-                                  child: GestureDetector(
-                                    onTap: () {
-                                      setState(() {
-                                        _selectedBoxId = isSelected ? null : box.id;
-                                      });
-                                    },
-                                    child: AnimatedContainer(
-                                      duration: const Duration(milliseconds: 180),
-                                      decoration: BoxDecoration(
-                                        color: box.badgeColor.withValues(alpha: isSelected ? 0.35 : 0.18),
-                                        borderRadius: BorderRadius.circular(8),
-                                        border: Border.all(
-                                          color: isSelected ? Colors.white : box.badgeColor,
-                                          width: isSelected ? 2.5 : 1.5,
-                                        ),
-                                        boxShadow: [
-                                          if (isSelected)
-                                            BoxShadow(
-                                              color: box.badgeColor.withValues(alpha: 0.4),
-                                              blurRadius: 10,
-                                              offset: const Offset(0, 2),
-                                            ),
-                                        ],
-                                      ),
-                                      padding: EdgeInsets.symmetric(
-                                        horizontal: width < 50 ? 2 : 4,
-                                        vertical: height < 30 ? 1 : 4,
-                                      ),
-                                      child: ClipRect(
-                                        child: LayoutBuilder(
-                                          builder: (context, boxConstraints) {
-                                            // 1. Tiny box: height < 28 or width < 45
-                                            if (boxConstraints.maxHeight < 28 || boxConstraints.maxWidth < 45) {
-                                              return Center(
-                                                child: FittedBox(
-                                                  fit: BoxFit.scaleDown,
-                                                  alignment: AlignmentDirectional.centerStart,
-                                                  child: Text(
-                                                    box.label.isNotEmpty ? box.label : box.typeTitlePersian,
-                                                    maxLines: 1,
-                                                    overflow: TextOverflow.ellipsis,
-                                                    style: TextStyle(
-                                                      fontSize: 8.5,
-                                                      fontWeight: FontWeight.bold,
-                                                      color: Colors.black.withValues(alpha: 0.85),
-                                                    ),
+                                  child: Stack(
+                                    clipBehavior: Clip.none,
+                                    children: [
+                                      // Main Box Container
+                                      Positioned.fill(
+                                        child: GestureDetector(
+                                          behavior: HitTestBehavior.opaque,
+                                          onTap: () {
+                                            setState(() {
+                                              _selectedBoxId = isSelected ? null : box.id;
+                                            });
+                                          },
+                                          onPanStart: (_isManualEditMode && isSelected)
+                                              ? (_) => setState(() => _isDraggingBoxOrHandle = true)
+                                              : null,
+                                          onPanUpdate: (_isManualEditMode && isSelected)
+                                              ? (details) {
+                                                  setState(() {
+                                                    final deltaNormX = details.delta.dx / constraints.maxWidth;
+                                                    final deltaNormY = details.delta.dy / constraints.maxHeight;
+                                                    final newX = (box.normalizedX + deltaNormX).clamp(0.0, 1.0 - box.normalizedWidth);
+                                                    final newY = (box.normalizedY + deltaNormY).clamp(0.0, 1.0 - box.normalizedHeight);
+                                                    box.normalizedX = newX;
+                                                    box.normalizedY = newY;
+                                                  });
+                                                }
+                                              : null,
+                                          onPanEnd: (_isManualEditMode && isSelected)
+                                              ? (_) => setState(() => _isDraggingBoxOrHandle = false)
+                                              : null,
+                                          onPanCancel: (_isManualEditMode && isSelected)
+                                              ? () => setState(() => _isDraggingBoxOrHandle = false)
+                                              : null,
+                                          child: AnimatedContainer(
+                                            duration: const Duration(milliseconds: 150),
+                                            decoration: BoxDecoration(
+                                              color: box.badgeColor.withValues(
+                                                alpha: isSelected
+                                                    ? (_isManualEditMode ? 0.38 : 0.35)
+                                                    : (_isManualEditMode ? 0.22 : 0.18),
+                                              ),
+                                              borderRadius: BorderRadius.circular(8),
+                                              border: Border.all(
+                                                color: isSelected
+                                                    ? (_isManualEditMode ? const Color(0xFFFF7043) : Colors.white)
+                                                    : (_isManualEditMode ? box.badgeColor.withValues(alpha: 0.85) : box.badgeColor),
+                                                width: isSelected ? 2.5 : (_isManualEditMode ? 1.8 : 1.5),
+                                              ),
+                                              boxShadow: [
+                                                if (isSelected)
+                                                  BoxShadow(
+                                                    color: (_isManualEditMode ? const Color(0xFFFF7043) : box.badgeColor).withValues(alpha: 0.45),
+                                                    blurRadius: 10,
+                                                    offset: const Offset(0, 2),
                                                   ),
-                                                ),
-                                              );
-                                            }
-
-                                            // 2. Compact box: 28 <= height < 46
-                                            if (boxConstraints.maxHeight < 46) {
-                                              return FittedBox(
-                                                fit: BoxFit.scaleDown,
-                                                alignment: AlignmentDirectional.topStart,
-                                                child: Row(
-                                                  mainAxisSize: MainAxisSize.min,
-                                                  children: [
-                                                    Container(
-                                                      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
-                                                      decoration: BoxDecoration(
-                                                        color: box.badgeColor,
-                                                        borderRadius: BorderRadius.circular(3),
-                                                      ),
-                                                      child: Text(
-                                                        box.typeTitlePersian,
-                                                        style: const TextStyle(
-                                                          color: Colors.white,
-                                                          fontSize: 8,
-                                                          fontWeight: FontWeight.bold,
+                                              ],
+                                            ),
+                                            padding: EdgeInsets.symmetric(
+                                              horizontal: width < 50 ? 2 : 4,
+                                              vertical: height < 30 ? 1 : 4,
+                                            ),
+                                            child: ClipRect(
+                                              child: LayoutBuilder(
+                                                builder: (context, boxConstraints) {
+                                                  // 1. Tiny box: height < 28 or width < 45
+                                                  if (boxConstraints.maxHeight < 28 || boxConstraints.maxWidth < 45) {
+                                                    return Center(
+                                                      child: FittedBox(
+                                                        fit: BoxFit.scaleDown,
+                                                        alignment: AlignmentDirectional.centerStart,
+                                                        child: Text(
+                                                          box.label.isNotEmpty ? box.label : box.typeTitlePersian,
+                                                          maxLines: 1,
+                                                          overflow: TextOverflow.ellipsis,
+                                                          style: TextStyle(
+                                                            fontSize: 8.5,
+                                                            fontWeight: FontWeight.bold,
+                                                            color: Colors.black.withValues(alpha: 0.85),
+                                                          ),
                                                         ),
                                                       ),
-                                                    ),
-                                                    const SizedBox(width: 4),
-                                                    Text(
-                                                      box.label,
-                                                      style: TextStyle(
-                                                        fontSize: 9,
-                                                        fontWeight: FontWeight.bold,
-                                                        color: Colors.black.withValues(alpha: 0.8),
-                                                      ),
-                                                      maxLines: 1,
-                                                      overflow: TextOverflow.ellipsis,
-                                                    ),
-                                                  ],
-                                                ),
-                                              );
-                                            }
+                                                    );
+                                                  }
 
-                                            // 3. Regular / Large box: height >= 46
-                                            return FittedBox(
-                                              fit: BoxFit.scaleDown,
-                                              alignment: AlignmentDirectional.topStart,
-                                              child: Column(
-                                                crossAxisAlignment: CrossAxisAlignment.start,
-                                                mainAxisSize: MainAxisSize.min,
-                                                children: [
-                                                  // Badge Tag
-                                                  Container(
-                                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                                    decoration: BoxDecoration(
-                                                      color: box.badgeColor,
-                                                      borderRadius: BorderRadius.circular(4),
-                                                    ),
-                                                    child: Text(
-                                                      box.typeTitlePersian,
-                                                      style: const TextStyle(
-                                                        color: Colors.white,
-                                                        fontSize: 9,
-                                                        fontWeight: FontWeight.bold,
+                                                  // 2. Compact box: 28 <= height < 46
+                                                  if (boxConstraints.maxHeight < 46) {
+                                                    return FittedBox(
+                                                      fit: BoxFit.scaleDown,
+                                                      alignment: AlignmentDirectional.topStart,
+                                                      child: Row(
+                                                        mainAxisSize: MainAxisSize.min,
+                                                        children: [
+                                                          Container(
+                                                            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                                                            decoration: BoxDecoration(
+                                                              color: box.badgeColor,
+                                                              borderRadius: BorderRadius.circular(3),
+                                                            ),
+                                                            child: Text(
+                                                              box.typeTitlePersian,
+                                                              style: const TextStyle(
+                                                                color: Colors.white,
+                                                                fontSize: 8,
+                                                                fontWeight: FontWeight.bold,
+                                                              ),
+                                                            ),
+                                                          ),
+                                                          const SizedBox(width: 4),
+                                                          Text(
+                                                            box.label,
+                                                            style: TextStyle(
+                                                              fontSize: 9,
+                                                              fontWeight: FontWeight.bold,
+                                                              color: Colors.black.withValues(alpha: 0.8),
+                                                            ),
+                                                            maxLines: 1,
+                                                            overflow: TextOverflow.ellipsis,
+                                                          ),
+                                                        ],
                                                       ),
+                                                    );
+                                                  }
+
+                                                  // 3. Regular / Large box: height >= 46
+                                                  return FittedBox(
+                                                    fit: BoxFit.scaleDown,
+                                                    alignment: AlignmentDirectional.topStart,
+                                                    child: Column(
+                                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                                      mainAxisSize: MainAxisSize.min,
+                                                      children: [
+                                                        Container(
+                                                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                                          decoration: BoxDecoration(
+                                                            color: box.badgeColor,
+                                                            borderRadius: BorderRadius.circular(4),
+                                                          ),
+                                                          child: Text(
+                                                            box.typeTitlePersian,
+                                                            style: const TextStyle(
+                                                              color: Colors.white,
+                                                              fontSize: 9,
+                                                              fontWeight: FontWeight.bold,
+                                                            ),
+                                                          ),
+                                                        ),
+                                                        const SizedBox(height: 2),
+                                                        Text(
+                                                          box.label,
+                                                          style: TextStyle(
+                                                            fontSize: 10,
+                                                            fontWeight: FontWeight.bold,
+                                                            color: Colors.black.withValues(alpha: 0.8),
+                                                          ),
+                                                          maxLines: 1,
+                                                          overflow: TextOverflow.ellipsis,
+                                                        ),
+                                                      ],
                                                     ),
-                                                  ),
-                                                  const SizedBox(height: 2),
-                                                  Text(
-                                                    box.label,
-                                                    style: TextStyle(
-                                                      fontSize: 10,
-                                                      fontWeight: FontWeight.bold,
-                                                      color: Colors.black.withValues(alpha: 0.8),
-                                                    ),
-                                                    maxLines: 1,
-                                                    overflow: TextOverflow.ellipsis,
-                                                  ),
-                                                ],
+                                                  );
+                                                },
                                               ),
-                                            );
-                                          },
+                                            ),
+                                          ),
                                         ),
                                       ),
-                                    ),
+
+                                      // In Manual Edit Mode and selected: Delete Cross & Resize Handle
+                                      if (_isManualEditMode && isSelected) ...[
+                                        // Delete Cross Button (Corner)
+                                        Positioned(
+                                          top: deleteTop,
+                                          left: deleteLeft,
+                                          child: GestureDetector(
+                                            behavior: HitTestBehavior.opaque,
+                                            onTap: () => _deleteBox(box),
+                                            child: Container(
+                                              width: 26,
+                                              height: 26,
+                                              decoration: BoxDecoration(
+                                                color: const Color(0xFFE53935),
+                                                shape: BoxShape.circle,
+                                                border: Border.all(color: Colors.white, width: 2),
+                                                boxShadow: const [
+                                                  BoxShadow(color: Colors.black38, blurRadius: 4, offset: Offset(0, 2)),
+                                                ],
+                                              ),
+                                              child: const Center(
+                                                child: Icon(Icons.close_rounded, size: 15, color: Colors.white),
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+
+                                        // Resize Handle (Bottom-Right Corner)
+                                        Positioned(
+                                          right: resizeRight,
+                                          bottom: resizeBottom,
+                                          child: GestureDetector(
+                                            behavior: HitTestBehavior.opaque,
+                                            onPanStart: (_) => setState(() => _isDraggingBoxOrHandle = true),
+                                            onPanUpdate: (details) {
+                                              setState(() {
+                                                final deltaNormW = details.delta.dx / constraints.maxWidth;
+                                                final deltaNormH = details.delta.dy / constraints.maxHeight;
+
+                                                final minNormW = 32.0 / constraints.maxWidth;
+                                                final minNormH = 20.0 / constraints.maxHeight;
+                                                final maxNormW = 1.0 - box.normalizedX;
+                                                final maxNormH = 1.0 - box.normalizedY;
+
+                                                box.normalizedWidth = (box.normalizedWidth + deltaNormW).clamp(minNormW, maxNormW);
+                                                box.normalizedHeight = (box.normalizedHeight + deltaNormH).clamp(minNormH, maxNormH);
+                                              });
+                                            },
+                                            onPanEnd: (_) => setState(() => _isDraggingBoxOrHandle = false),
+                                            onPanCancel: () => setState(() => _isDraggingBoxOrHandle = false),
+                                            child: Container(
+                                              width: 26,
+                                              height: 26,
+                                              decoration: BoxDecoration(
+                                                color: const Color(0xFFFF7043),
+                                                shape: BoxShape.circle,
+                                                border: Border.all(color: Colors.white, width: 2),
+                                                boxShadow: const [
+                                                  BoxShadow(color: Colors.black38, blurRadius: 4, offset: Offset(0, 2)),
+                                                ],
+                                              ),
+                                              child: const Center(
+                                                child: Icon(Icons.open_in_full_rounded, size: 13, color: Colors.white),
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    ],
                                   ),
                                 );
                               }),
+
+                            // Empty State Message if all boxes are deleted
+                            if (_analysisResult != null && _analysisResult!.detectedBoxes.isEmpty)
+                              Center(
+                                child: Container(
+                                  margin: const EdgeInsets.all(24),
+                                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                                  decoration: BoxDecoration(
+                                    color: Colors.black.withValues(alpha: 0.72),
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                  child: const Text(
+                                    'تمام کادرهای متن حذف شده‌اند.\nمی‌توانید با دستیار هوش مصنوعی پایین، کادرهای جدید اضافه کنید.',
+                                    textAlign: TextAlign.center,
+                                    style: TextStyle(color: Colors.white, fontSize: 12, height: 1.4),
+                                  ),
+                                ),
+                              ),
 
                             // AI Detected Checkpoints Preview Layer
                             if (_analysisResult != null)

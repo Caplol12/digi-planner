@@ -1,9 +1,8 @@
 import 'dart:convert';
-import 'dart:io';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import '../models/template_model.dart';
 import '../theme/app_theme.dart';
+import 'platform_image_helper.dart';
 
 class TemplateCard extends StatelessWidget {
   final JournalTemplate template;
@@ -56,17 +55,12 @@ class TemplateCard extends StatelessWidget {
         );
       }
 
-      if (!kIsWeb) {
-        try {
-          final file = File(path);
-          if (file.existsSync()) {
-            return Image.file(
-              file,
-              fit: BoxFit.contain,
-              errorBuilder: (ctx, err, stack) => _buildFallbackSheet(),
-            );
-          }
-        } catch (_) {}
+      if (platformFileExists(path)) {
+        return buildPlatformFileImage(
+          filePath: path,
+          fit: BoxFit.contain,
+          errorWidget: _buildFallbackSheet(),
+        );
       }
     }
 

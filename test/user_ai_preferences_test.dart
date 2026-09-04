@@ -62,6 +62,12 @@ void main() {
 
   test('UserAiPreferencesService has valid list of recommended Gemini models', () {
     expect(UserAiPreferencesService.availableModels, isNotEmpty);
+    expect(UserAiPreferencesService.availableModels.any((m) => m.id == 'gemini-3.5-flash'), isTrue);
+    expect(UserAiPreferencesService.availableModels.any((m) => m.id == 'gemini-3.5-pro'), isTrue);
+    expect(UserAiPreferencesService.availableModels.any((m) => m.id == 'gemini-3.1-flash'), isTrue);
+    expect(UserAiPreferencesService.availableModels.any((m) => m.id == 'gemini-3.1-pro'), isTrue);
+    expect(UserAiPreferencesService.availableModels.any((m) => m.id == 'gemini-3.0-flash'), isTrue);
+    expect(UserAiPreferencesService.availableModels.any((m) => m.id == 'gemini-3.0-pro'), isTrue);
     expect(UserAiPreferencesService.availableModels.any((m) => m.id == 'gemini-2.5-flash'), isTrue);
     expect(UserAiPreferencesService.availableModels.any((m) => m.id == 'gemini-2.0-flash'), isTrue);
     expect(UserAiPreferencesService.availableModels.any((m) => m.id == 'gemini-2.5-pro'), isTrue);

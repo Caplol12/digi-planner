@@ -3,6 +3,7 @@ import 'package:google_fonts/google_fonts.dart';
 
 class CustomAppBar extends StatelessWidget implements PreferredSizeWidget {
   final String title;
+  final VoidCallback? onSearchPressed;
   final VoidCallback? onFavoritesPressed;
   final VoidCallback? onImportPressed;
   final VoidCallback? onSettingsPressed;
@@ -10,6 +11,7 @@ class CustomAppBar extends StatelessWidget implements PreferredSizeWidget {
   const CustomAppBar({
     super.key,
     this.title = 'PlanWiz',
+    this.onSearchPressed,
     this.onFavoritesPressed,
     this.onImportPressed,
     this.onSettingsPressed,
@@ -49,10 +51,21 @@ class CustomAppBar extends StatelessWidget implements PreferredSizeWidget {
               ),
             ),
 
-            // Right: Import JSON (📥), Heart (Favorites ♡) and Settings (⚙) linear icons
+            // Right: Search, Import JSON (📥), Heart (Favorites ♡) and Settings (⚙) linear icons
             Row(
               mainAxisSize: MainAxisSize.min,
               children: [
+                if (onSearchPressed != null)
+                  IconButton(
+                    onPressed: onSearchPressed,
+                    icon: const Icon(
+                      Icons.search_rounded,
+                      size: 22,
+                      color: Color(0xFF64748B),
+                    ),
+                    tooltip: 'جستجو در قالب‌ها و یادداشت‌ها',
+                    visualDensity: VisualDensity.compact,
+                  ),
                 if (onImportPressed != null)
                   IconButton(
                     onPressed: onImportPressed,

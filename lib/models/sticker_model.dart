@@ -21,6 +21,28 @@ class StickerItem {
     this.isSelected = true,
   });
 
+  StickerItem copyWith({
+    String? id,
+    String? content,
+    String? imagePath,
+    bool? isEmoji,
+    Offset? position,
+    double? scale,
+    double? rotation,
+    bool? isSelected,
+  }) {
+    return StickerItem(
+      id: id ?? this.id,
+      content: content ?? this.content,
+      imagePath: imagePath ?? this.imagePath,
+      isEmoji: isEmoji ?? this.isEmoji,
+      position: position ?? this.position,
+      scale: scale ?? this.scale,
+      rotation: rotation ?? this.rotation,
+      isSelected: isSelected ?? this.isSelected,
+    );
+  }
+
   Map<String, dynamic> toJson() => {
         'id': id,
         'content': content,
@@ -33,7 +55,7 @@ class StickerItem {
       };
 
   factory StickerItem.fromJson(Map<String, dynamic> json) => StickerItem(
-        id: json['id'] ?? DateTime.now().millisecondsSinceEpoch.toString(),
+        id: json['id'] ?? 'stk_${DateTime.now().millisecondsSinceEpoch}',
         content: json['content'] ?? '⭐',
         imagePath: json['imagePath'] as String?,
         isEmoji: json['isEmoji'] ?? (json['imagePath'] == null),

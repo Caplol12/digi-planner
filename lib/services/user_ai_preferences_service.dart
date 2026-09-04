@@ -1,7 +1,8 @@
 import 'dart:convert';
-import 'package:flutter/foundation.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
+import 'app_logger.dart';
 
 enum AiProviderType {
   developer,
@@ -40,34 +41,68 @@ class UserAiPreferencesService {
   static const String _keyGeminiModel = 'user_gemini_model';
   static const String _keyCustomModelName = 'user_gemini_custom_model_name';
 
-  static const String defaultGeminiModel = 'gemini-2.5-flash';
+  static const FlutterSecureStorage _secureStorage = FlutterSecureStorage(
+    aOptions: AndroidOptions(encryptedSharedPreferences: true),
+  );
+
+  static const String defaultGeminiModel = 'gemini-3.5-flash';
 
   static const List<GeminiModelOption> availableModels = [
     GeminiModelOption(
-      id: 'gemini-2.5-flash',
-      displayName: 'Gemini 2.5 Flash',
-      description: 'جدیدترین، پرسرعت‌ترین و هوشمندترین مدل بینایی (پیشنهادی)',
+      id: 'gemini-3.5-flash',
+      displayName: 'Gemini 3.5 Flash',
+      description: 'پیشرفته‌ترین، پرسرعت‌ترین و دقیق‌ترین مدل چندوجهی بینایی (پیشنهادی)',
       isRecommended: true,
     ),
     GeminiModelOption(
-      id: 'gemini-2.0-flash',
-      displayName: 'Gemini 2.0 Flash',
-      description: 'مدل پرسرعت و بهینه نسل ۲ با درک دیداری عالی',
+      id: 'gemini-3.5-pro',
+      displayName: 'Gemini 3.5 Pro',
+      description: 'بالاترین سطح درک فضایی و استدلال عمیق برای برگه‌های بسیار پیچیده',
+    ),
+    GeminiModelOption(
+      id: 'gemini-3.1-flash',
+      displayName: 'Gemini 3.1 Flash',
+      description: 'نسل ۳.۱ فوق‌سریع برای استخراج فوری چیدمان و کادرهای متن',
+    ),
+    GeminiModelOption(
+      id: 'gemini-3.1-pro',
+      displayName: 'Gemini 3.1 Pro',
+      description: 'نسل ۳.۱ با تمرکز بر تفکیک دقیق خطوط و المان‌های تو در تو',
+    ),
+    GeminiModelOption(
+      id: 'gemini-3.0-flash',
+      displayName: 'Gemini 3.0 Flash',
+      description: 'مدل پرچمدار سریع نسل ۳ با کارایی و سرعت پاسخگویی بالا',
+    ),
+    GeminiModelOption(
+      id: 'gemini-3.0-pro',
+      displayName: 'Gemini 3.0 Pro',
+      description: 'مدل تحلیلی عمیق نسل ۳ با دقت بصری بالا',
+    ),
+    GeminiModelOption(
+      id: 'gemini-2.5-flash',
+      displayName: 'Gemini 2.5 Flash',
+      description: 'مدل پایدار و بهینه بینایی نسل ۲.۵',
     ),
     GeminiModelOption(
       id: 'gemini-2.5-pro',
       displayName: 'Gemini 2.5 Pro',
-      description: 'قوی‌ترین استدلال و بیشترین دقت برای برگه‌های بسیار شلوغ',
+      description: 'مدل استدلالی با عمق تحلیل بالا نسل ۲.۵',
+    ),
+    GeminiModelOption(
+      id: 'gemini-2.0-flash',
+      displayName: 'Gemini 2.0 Flash',
+      description: 'مدل پرسرعت و سبک نسل ۲ با درک دیداری مناسب',
     ),
     GeminiModelOption(
       id: 'gemini-1.5-flash',
       displayName: 'Gemini 1.5 Flash',
-      description: 'مدل سبک، سریع و پایدار نسل پیشین',
+      description: 'مدل سبک و پایدار نسل پیشین',
     ),
     GeminiModelOption(
       id: 'gemini-1.5-pro',
       displayName: 'Gemini 1.5 Pro',
-      description: 'مدل حرفه‌ای نسل اول با عمق تحلیل بالا',
+      description: 'مدل حرفه‌ای نسل اول',
     ),
   ];
 
@@ -76,6 +111,14 @@ class UserAiPreferencesService {
   static String _geminiModel = defaultGeminiModel;
   static String _customModelName = '';
   static bool _isLoaded = false;
+
+  static void resetForTesting() {
+    _currentProvider = AiProviderType.developer;
+    _geminiApiKey = '';
+    _geminiModel = defaultGeminiModel;
+    _customModelName = '';
+    _isLoaded = false;
+  }
 
   /// Get current active provider
   static AiProviderType get activeProvider => _currentProvider;
@@ -100,7 +143,7 @@ class UserAiPreferencesService {
   /// Whether user has configured a non-empty Gemini API key
   static bool get hasGeminiApiKey => _geminiApiKey.trim().isNotEmpty;
 
-  /// Load settings from SharedPreferences
+  /// Load settings from SharedPreferences and SecureStorage
   static Future<void> loadPreferences() async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -111,13 +154,34 @@ class UserAiPreferencesService {
         _currentProvider = AiProviderType.developer;
       }
 
-      _geminiApiKey = prefs.getString(_keyGeminiApiKey) ?? '';
+      // Load key from SecureStorage with automatic migration from plaintext SharedPreferences
+      try {
+        final secureKey = await _secureStorage
+            .read(key: _keyGeminiApiKey)
+            .timeout(const Duration(milliseconds: 500));
+        if (secureKey != null && secureKey.isNotEmpty) {
+          _geminiApiKey = secureKey;
+        } else {
+          final legacyKey = prefs.getString(_keyGeminiApiKey) ?? '';
+          if (legacyKey.isNotEmpty) {
+            _geminiApiKey = legacyKey;
+            await _secureStorage
+                .write(key: _keyGeminiApiKey, value: legacyKey)
+                .timeout(const Duration(milliseconds: 500));
+            await prefs.remove(_keyGeminiApiKey);
+          } else {
+            _geminiApiKey = '';
+          }
+        }
+      } catch (_) {
+        _geminiApiKey = prefs.getString(_keyGeminiApiKey) ?? '';
+      }
+
       _geminiModel = prefs.getString(_keyGeminiModel) ?? defaultGeminiModel;
       _customModelName = prefs.getString(_keyCustomModelName) ?? '';
       _isLoaded = true;
-      debugPrint('🔑 Loaded AI Preferences: provider=$_currentProvider, model=$geminiModel, hasKey=$hasGeminiApiKey');
-    } catch (e) {
-      debugPrint('⚠️ Error loading AI Preferences: $e');
+    } catch (e, st) {
+      AppLog.e('UserAiPreferencesService', 'Error loading AI Preferences: $e', st);
       _isLoaded = true;
     }
   }
@@ -146,12 +210,21 @@ class UserAiPreferencesService {
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString(_keyProviderType, providerType == AiProviderType.googleAiStudio ? 'google_ai_studio' : 'developer');
-      await prefs.setString(_keyGeminiApiKey, _geminiApiKey);
+
+      // Secure storage for sensitive API Key
+      try {
+        await _secureStorage
+            .write(key: _keyGeminiApiKey, value: _geminiApiKey)
+            .timeout(const Duration(milliseconds: 500));
+        await prefs.remove(_keyGeminiApiKey); // Ensure removed from plaintext prefs
+      } catch (_) {
+        await prefs.setString(_keyGeminiApiKey, _geminiApiKey);
+      }
+
       await prefs.setString(_keyGeminiModel, _geminiModel);
       await prefs.setString(_keyCustomModelName, _customModelName);
-      debugPrint('✅ Saved AI Preferences successfully.');
-    } catch (e) {
-      debugPrint('⚠️ Error saving AI Preferences: $e');
+    } catch (e, st) {
+      AppLog.e('UserAiPreferencesService', 'Error saving AI Preferences: $e', st);
     }
   }
 

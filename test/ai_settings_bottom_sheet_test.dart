@@ -21,7 +21,7 @@ void main() {
         home: Directionality(
           textDirection: TextDirection.rtl,
           child: ProTemplateBuilderScreen(
-            onJournalCreated: (_) {},
+            onTemplateCreated: (_, __) {},
           ),
         ),
       ),
